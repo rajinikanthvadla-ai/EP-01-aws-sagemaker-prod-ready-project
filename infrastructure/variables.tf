@@ -3,6 +3,12 @@ variable "aws_region" {
   type        = string
 }
 
+variable "project_name" {
+  description = "The name of the project, used for resource naming."
+  type        = string
+  default     = "abalone-mlops"
+}
+
 variable "s3_bucket_name" {
   description = "The name of the S3 bucket for storing pipeline artifacts."
   type        = string

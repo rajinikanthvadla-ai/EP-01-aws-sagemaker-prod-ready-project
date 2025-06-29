@@ -46,12 +46,12 @@ output "github_actions_role_arn" {
 
 output "eks_cluster_name" {
   description = "The name of the EKS cluster."
-  value       = module.eks.cluster_id
+  value       = aws_eks_cluster.main.name
 }
 
 output "eks_cluster_endpoint" {
   description = "The endpoint for the EKS cluster."
-  value       = module.eks.cluster_endpoint
+  value       = aws_eks_cluster.main.endpoint
 }
 
 output "sagemaker_studio_domain_id" {
@@ -61,5 +61,5 @@ output "sagemaker_studio_domain_id" {
 
 output "mlflow_url" {
   description = "The URL of the MLflow UI."
-  value       = "http://${data.kubernetes_service.mlflow_service.status[0].load_balancer[0].ingress[0].hostname}"
+  value       = "http://${data.kubernetes_service.mlflow.status[0].load_balancer[0].ingress[0].hostname}"
 } 
