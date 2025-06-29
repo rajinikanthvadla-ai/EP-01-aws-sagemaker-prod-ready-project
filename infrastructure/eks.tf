@@ -75,13 +75,12 @@ resource "kubernetes_namespace" "mlflow" {
   depends_on = [aws_eks_node_group.main]
 }
 
-# MLflow Helm Chart from Bitnami
+# MLflow Helm Chart from Bitnami - Using latest version
 resource "helm_release" "mlflow" {
   name       = "mlflow"
   repository = "https://charts.bitnami.com/bitnami"
   chart      = "mlflow"
   namespace  = kubernetes_namespace.mlflow.metadata[0].name
-  version    = "0.7.19"
 
   set {
     name  = "tracking.auth.enabled"
