@@ -16,7 +16,6 @@ resource "aws_lambda_function" "trigger_deployment" {
     variables = {
       GITHUB_REPO              = var.github_repo
       GITHUB_TOKEN_SECRET_NAME = aws_secretsmanager_secret.github_pat.name
-      AWS_REGION               = var.aws_region
     }
   }
 

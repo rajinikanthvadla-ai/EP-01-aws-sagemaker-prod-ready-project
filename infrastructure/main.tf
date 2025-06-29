@@ -2,10 +2,6 @@ provider "aws" {
   region = var.aws_region
 }
 
-resource "aws_s3_bucket" "pipeline_artifacts" {
-  bucket = var.s3_bucket_name
-}
-
 resource "random_password" "db_password" {
   length           = 16
   special          = true
@@ -35,7 +31,7 @@ resource "aws_ecr_repository" "ui_repository" {
 resource "aws_db_instance" "mlflow_db" {
   allocated_storage    = 20
   engine               = "postgres"
-  engine_version       = "14.6"
+  engine_version       = "15.5"
   instance_class       = "db.t3.micro"
   db_name              = "mlflowdb"
   username             = "mlflow"

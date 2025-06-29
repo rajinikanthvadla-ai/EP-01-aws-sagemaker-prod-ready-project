@@ -1,3 +1,7 @@
+data "aws_s3_bucket" "existing_bucket" {
+  bucket = var.s3_bucket_name
+}
+
 # IAM Role for SageMaker
 resource "aws_iam_role" "sagemaker_role" {
   name = "SageMakerExecutionRole"
@@ -63,9 +67,9 @@ data "aws_iam_policy_document" "github_actions_assume_role_policy" {
       identifiers = [var.oidc_provider_arn]
     }
     condition {
-      test     = "StringEquals"
-      variable = "${replace(var.oidc_provider_arn, "/^(.*):o-/", "aud")}:sub"
-      values   = ["repo:${var.github_repo}:ref:refs/heads/main"]
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${var.github_repo}:*"]
     }
   }
 }
@@ -112,7 +116,9 @@ resource "aws_iam_role_policy" "github_actions_policy" {
         Effect   = "Allow",
         Resource = [
           aws_ecr_repository.api_repository.arn,
-          aws_ecr_repository.ui_repository.arn
+          aws_ecr_repository.ui_repository.arn,
+          data.aws_s3_bucket.existing_bucket.arn,
+          "${data.aws_s3_bucket.existing_bucket.arn}/*"
         ]
       },
       {
