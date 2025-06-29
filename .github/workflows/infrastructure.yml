@@ -16,7 +16,7 @@ jobs:
       uses: actions/checkout@v3
 
     - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionRole-Terraform # A pre-existing role for terraform
         aws-region: ${{ secrets.AWS_REGION }}
