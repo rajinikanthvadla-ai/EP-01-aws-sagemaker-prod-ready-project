@@ -1,0 +1,199 @@
+name: Troubleshoot MLflow Deployment
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  EKS_CLUSTER_NAME: abalone-mlops
+
+jobs:
+  troubleshoot-mlflow:
+    name: Troubleshoot MLflow
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl for EKS
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+        kubectl cluster-info
+
+    - name: Check MLflow Namespace
+      run: |
+        echo "🔍 Checking MLflow namespace..."
+        kubectl get namespaces | grep mlflow || echo "❌ MLflow namespace not found"
+
+    - name: Check MLflow Pods
+      run: |
+        echo "📦 Checking MLflow pods..."
+        kubectl get pods -n mlflow -o wide
+        echo ""
+        echo "📋 Pod details:"
+        kubectl describe pods -n mlflow
+
+    - name: Check MLflow Service
+      run: |
+        echo "🔗 Checking MLflow service..."
+        kubectl get svc -n mlflow -o wide
+        echo ""
+        echo "📋 Service details:"
+        kubectl describe svc mlflow -n mlflow
+
+    - name: Check MLflow Logs
+      run: |
+        echo "📋 Checking MLflow container logs..."
+        kubectl logs -n mlflow deployment/mlflow --tail=50 || echo "❌ Could not get logs"
+
+    - name: Check LoadBalancer Status
+      run: |
+        echo "🌐 Checking LoadBalancer status..."
+        
+        LB_HOSTNAME=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        LB_IP=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+        
+        echo "LoadBalancer Hostname: $LB_HOSTNAME"
+        echo "LoadBalancer IP: $LB_IP"
+        
+        if [ -n "$LB_HOSTNAME" ]; then
+          echo "✅ LoadBalancer has hostname: $LB_HOSTNAME"
+          echo "🌐 MLflow URL should be: http://$LB_HOSTNAME"
+        elif [ -n "$LB_IP" ]; then
+          echo "✅ LoadBalancer has IP: $LB_IP"
+          echo "🌐 MLflow URL should be: http://$LB_IP"
+        else
+          echo "❌ LoadBalancer has no external access"
+        fi
+
+    - name: Test MLflow Connectivity
+      run: |
+        echo "🔌 Testing MLflow connectivity..."
+        
+        # Get the service details
+        kubectl get svc mlflow -n mlflow
+        
+        # Try to port-forward and test locally
+        echo "📡 Testing port-forward..."
+        kubectl port-forward -n mlflow svc/mlflow 8080:80 &
+        PF_PID=$!
+        
+        sleep 10
+        
+        # Test local connection
+        curl -f http://localhost:8080 --max-time 10 || echo "❌ Local connection failed"
+        
+        # Clean up port-forward
+        kill $PF_PID 2>/dev/null || true
+
+    - name: Check Events
+      run: |
+        echo "📅 Checking recent events..."
+        kubectl get events -n mlflow --sort-by='.lastTimestamp' | tail -20
+
+    - name: Diagnose Issues
+      run: |
+        echo "🔍 Diagnosing common issues..."
+        
+        # Check if pods are running
+        POD_STATUS=$(kubectl get pods -n mlflow -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+        echo "Pod Status: $POD_STATUS"
+        
+        if [ "$POD_STATUS" != "Running" ]; then
+          echo "❌ Pod is not running. Checking why..."
+          kubectl describe pods -n mlflow
+        fi
+        
+        # Check service endpoints
+        echo ""
+        echo "🔗 Service endpoints:"
+        kubectl get endpoints -n mlflow
+        
+        # Check if service has external IP
+        EXTERNAL_IP=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        if [ -z "$EXTERNAL_IP" ]; then
+          echo "❌ Service has no external IP/hostname"
+          echo "🔧 This might be a LoadBalancer provisioning issue"
+        fi
+
+    - name: Provide Solutions
+      run: |
+        echo ""
+        echo "🔧 SOLUTIONS:"
+        echo ""
+        
+        # Get current status
+        POD_STATUS=$(kubectl get pods -n mlflow -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+        LB_HOSTNAME=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        
+        if [ "$POD_STATUS" != "Running" ]; then
+          echo "1. 🔄 Restart MLflow deployment:"
+          echo "   kubectl rollout restart deployment/mlflow -n mlflow"
+          echo ""
+        fi
+        
+        if [ -z "$LB_HOSTNAME" ]; then
+          echo "2. 🌐 Fix LoadBalancer service:"
+          echo "   kubectl patch svc mlflow -n mlflow -p '{\"spec\":{\"type\":\"LoadBalancer\"}}'"
+          echo ""
+        fi
+        
+        echo "3. 🔍 Get real-time status:"
+        echo "   kubectl get pods,svc -n mlflow"
+        echo ""
+        echo "4. 📋 Check logs:"
+        echo "   kubectl logs -f deployment/mlflow -n mlflow"
+        echo ""
+        echo "5. 🌐 Get URL when ready:"
+        echo "   kubectl get svc mlflow -n mlflow"
+
+    - name: Auto-Fix Common Issues
+      run: |
+        echo "🔧 Attempting to auto-fix common issues..."
+        
+        # Restart deployment if pod is not running
+        POD_STATUS=$(kubectl get pods -n mlflow -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+        if [ "$POD_STATUS" != "Running" ]; then
+          echo "🔄 Restarting MLflow deployment..."
+          kubectl rollout restart deployment/mlflow -n mlflow
+          
+          echo "⏳ Waiting for deployment to be ready..."
+          kubectl rollout status deployment/mlflow -n mlflow --timeout=300s
+        fi
+        
+        # Ensure service is LoadBalancer type
+        echo "🌐 Ensuring service is LoadBalancer type..."
+        kubectl patch svc mlflow -n mlflow -p '{"spec":{"type":"LoadBalancer"}}'
+        
+        echo "✅ Auto-fix completed"
+
+    - name: Final Status Check
+      run: |
+        echo "📊 FINAL STATUS:"
+        echo ""
+        echo "Pods:"
+        kubectl get pods -n mlflow
+        echo ""
+        echo "Services:"
+        kubectl get svc -n mlflow
+        echo ""
+        
+        LB_HOSTNAME=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        if [ -n "$LB_HOSTNAME" ]; then
+          echo "🎉 SUCCESS! MLflow URL: http://$LB_HOSTNAME"
+        else
+          echo "⏳ LoadBalancer still provisioning. Check again in 2-3 minutes."
+        fi 
