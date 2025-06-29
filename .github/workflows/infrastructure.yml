@@ -1,41 +1,70 @@
-name: 'Terraform - Provision or Update Infrastructure'
+name: Infrastructure Pipeline
 
 on:
+  push:
+    branches: [ main ]
+    paths: 
+      - 'infrastructure/**'
+      - '.github/workflows/infrastructure.yml'
   workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_aws_region: us-east-1
+  TF_VAR_s3_bucket_name: abalone-mlops-artifacts-${{ github.repository_owner }}
+  TF_VAR_github_repo: ${{ github.repository }}
+  TF_VAR_github_pat: ${{ secrets.GITHUB_TOKEN }}
+  TF_VAR_oidc_provider_arn: ${{ secrets.OIDC_PROVIDER_ARN }}
 
 jobs:
   terraform:
-    name: 'Terraform Apply'
+    name: 'Terraform Infrastructure'
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
-
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      uses: actions/checkout@v4
 
     - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
+      uses: hashicorp/setup-terraform@v3
       with:
-        terraform_version: 1.2.9
+        terraform_version: 1.5.0
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
     - name: Terraform Init
+      working-directory: ./infrastructure
       run: |
         terraform init \
-          -backend-config="bucket=${{ secrets.S3_BUCKET_NAME }}" \
-          -backend-config="key=terraform.tfstate" \
-          -backend-config="region=${{ secrets.AWS_REGION }}"
+          -backend-config="bucket=${{ env.TF_VAR_s3_bucket_name }}" \
+          -backend-config="key=terraform/state" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+
+    - name: Clean Terraform State (Remove Kubernetes Resources)
       working-directory: ./infrastructure
+      run: |
+        # Remove any leftover Kubernetes/Helm resources from state
+        terraform state list | grep -E "(kubernetes_|helm_|data.kubernetes_)" | while read resource; do
+          echo "Removing $resource from state..."
+          terraform state rm "$resource" || true
+        done
+      continue-on-error: true
 
     - name: Terraform Plan
-      run: terraform plan -var="aws_region=${{ secrets.AWS_REGION }}" -var="github_pat=${{ secrets.GH_PAT }}" -var="github_repo=${{ secrets.GH_REPO }}" -var="oidc_provider_arn=${{ secrets.OIDC_PROVIDER_ARN }}" -var="s3_bucket_name=${{ secrets.S3_BUCKET_NAME }}" -out=tfplan
       working-directory: ./infrastructure
+      run: terraform plan -out=tfplan
 
     - name: Terraform Apply
+      working-directory: ./infrastructure
       run: terraform apply -auto-approve tfplan
-      working-directory: ./infrastructure 
+
+    - name: Output Infrastructure Details
+      working-directory: ./infrastructure
+      run: |
+        echo "Infrastructure deployment completed!"
+        terraform output 
