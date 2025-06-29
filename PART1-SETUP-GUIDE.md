@@ -44,7 +44,8 @@ The infrastructure pipeline needs these secrets to authenticate and run.
     *   `TERRAFORM_AWS_SECRET_ACCESS_KEY`: The Secret Access Key you copied in **Step 1**.
     *   `S3_BUCKET_NAME`: The exact name of the S3 bucket you created in **Step 2**.
     *   `GH_REPO`: Your repository name in the exact `owner/repository_name` format (e.g., `john-doe/mlops-project`).
-    *   `GH_PAT`: The Personal Access Token you should have from the original guide.
+    *   `GH_PAT`: The Personal Access Token you created in the prerequisites.
+    *   `OIDC_PROVIDER_ARN`: The full ARN of the OIDC provider you created in **Step 2** of the previous version of this guide (the one starting with `arn:aws:iam...`). This is required by Terraform to build roles for the *other* pipelines.
 
 ---
 
