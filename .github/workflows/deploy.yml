@@ -43,10 +43,11 @@ jobs:
 
   build-and-push-api:
     runs-on: ubuntu-latest
-    needs: deploy-staging # Depends on getting the ARN, but can run in parallel
     permissions:
       id-token: write
       contents: read
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
@@ -69,6 +70,38 @@ jobs:
         IMAGE_TAG: ${{ github.sha }}
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./api
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  build-and-push-ui:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
+        aws-region: <<AWS_REGION>>
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push UI image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: abalone-prediction-ui
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./ui
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
@@ -118,7 +151,7 @@ jobs:
 
   deploy-production:
     runs-on: ubuntu-latest
-    needs: [test-staging, build-and-push-api]
+    needs: [test-staging, build-and-push-api, build-and-push-ui]
     environment:
       name: production
       url: 'https://console.aws.amazon.com/sagemaker/home?region=<<AWS_REGION>>#/endpoints/abalone-production'
@@ -146,9 +179,26 @@ jobs:
         pip install boto3
 
     - name: Deploy to Production via CloudFormation
+      id: deploy-cfn
       run: |
         python scripts/deploy.py \
           --model-package-arn ${{ needs.deploy-staging.outputs.model_package_arn }} \
           --environment production
       env:
-        AWS_REGION: <<AWS_REGION>> 
+        AWS_REGION: <<AWS_REGION>>
+
+    - name: Deploy to EKS
+      uses: aws-actions/amazon-eks-get-kubeconfig@v1
+      with:
+        name: ${{ secrets.EKS_CLUSTER_NAME }}
+        region: ${{ secrets.AWS_REGION }}
+        role-arn: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
+
+    - name: Apply Kubernetes manifests
+      run: |
+        # Replace placeholders in K8s manifests
+        sed -i 's|<<AWS_ACCOUNT_ID>>|${{ secrets.AWS_ACCOUNT_ID }}|g' kubernetes/*.yaml
+        sed -i 's|<<AWS_REGION>>|${{ secrets.AWS_REGION }}|g' kubernetes/*.yaml
+        sed -i 's|:latest|:${{ github.sha }}|g' kubernetes/*.yaml
+        
+        kubectl apply -f kubernetes/ 

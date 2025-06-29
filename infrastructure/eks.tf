@@ -78,7 +78,7 @@ resource "helm_release" "mlflow" {
   }
   set {
     name  = "backend-store.postgres.database"
-    value = aws_db_instance.mlflow_db.name
+    value = aws_db_instance.mlflow_db.db_name
   }
   set {
     name  = "default-artifact-root"
@@ -88,6 +88,19 @@ resource "helm_release" "mlflow" {
     name  = "service.type"
     value = "LoadBalancer"
   }
+}
+
+resource "kubernetes_secret" "db_credentials" {
+  metadata {
+    name = "db-credentials"
+  }
+
+  data = {
+    endpoint = aws_db_instance.mlflow_db.endpoint
+    password = random_password.db_password.result
+  }
+
+  type = "Opaque"
 }
 
 data "aws_eks_cluster" "cluster" {
