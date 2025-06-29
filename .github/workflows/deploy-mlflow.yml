@@ -9,7 +9,7 @@ env:
 
 jobs:
   deploy-mlflow:
-    name: Deploy MLflow
+    name: Deploy Working MLflow
     runs-on: ubuntu-latest
     
     steps:
@@ -28,17 +28,29 @@ jobs:
       with:
         version: 'v1.28.0'
 
-    - name: Setup Helm
-      uses: azure/setup-helm@v3
-      with:
-        version: '3.12.0'
-
     - name: Configure kubectl for EKS
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
         kubectl cluster-info
 
-    - name: Setup Terraform to get outputs
+    - name: FORCE DELETE All MLflow Resources
+      run: |
+        echo "🧹 FORCE DELETING all MLflow resources..."
+        
+        # Delete all deployments, services, pods in mlflow namespace
+        kubectl delete all --all -n mlflow --ignore-not-found=true --force --grace-period=0
+        
+        # Delete the namespace itself
+        kubectl delete namespace mlflow --ignore-not-found=true --force --grace-period=0
+        
+        # Wait for complete cleanup
+        echo "⏳ Waiting for complete cleanup..."
+        sleep 90
+        
+        # Double check everything is gone
+        kubectl get all -n mlflow 2>/dev/null || echo "✅ MLflow namespace completely cleaned"
+
+    - name: Setup Terraform to get database details
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.5.0
@@ -60,86 +72,177 @@ jobs:
         echo "::add-mask::$DB_PASSWORD"
         echo "DB_PASSWORD=$DB_PASSWORD" >> $GITHUB_ENV
 
-    - name: Add Bitnami Helm Repository
+    - name: Deploy Clean MLflow (NO HEALTH CHECKS)
       run: |
-        helm repo add bitnami https://charts.bitnami.com/bitnami
-        helm repo update
-
-    - name: Create MLflow Namespace
-      run: |
-        kubectl create namespace mlflow --dry-run=client -o yaml | kubectl apply -f -
-
-    - name: Deploy MLflow (Simplified)
-      run: |
-        echo "🚀 Deploying MLflow with simplified configuration..."
+        echo "🚀 Deploying clean MLflow without health checks..."
         
-        helm upgrade --install mlflow bitnami/mlflow \
-          --namespace mlflow \
-          --set tracking.auth.enabled=false \
-          --set postgresql.enabled=false \
-          --set externalDatabase.host="${{ env.DB_HOST }}" \
-          --set externalDatabase.port=5432 \
-          --set externalDatabase.database="mlflowdb" \
-          --set externalDatabase.user="mlflow" \
-          --set externalDatabase.password="${{ env.DB_PASSWORD }}" \
-          --set service.type=LoadBalancer \
-          --timeout=5m
+        # Create fresh namespace
+        kubectl create namespace mlflow
         
-        echo "✅ MLflow Helm chart deployed"
+        # Deploy MLflow with NO health checks
+        cat <<EOF | kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: mlflow
+          namespace: mlflow
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: mlflow
+          template:
+            metadata:
+              labels:
+                app: mlflow
+            spec:
+              containers:
+              - name: mlflow
+                image: python:3.9-slim
+                ports:
+                - containerPort: 5000
+                env:
+                - name: MLFLOW_BACKEND_STORE_URI
+                  value: "postgresql://mlflow:${{ env.DB_PASSWORD }}@${{ env.DB_HOST }}:5432/mlflowdb"
+                - name: MLFLOW_DEFAULT_ARTIFACT_ROOT
+                  value: "/tmp/mlflow-artifacts"
+                command: ["/bin/bash"]
+                args:
+                - -c
+                - |
+                  echo "🔧 Installing MLflow..."
+                  pip install --no-cache-dir mlflow[extras]==2.8.1 psycopg2-binary
+                  
+                  echo "🚀 Starting MLflow server..."
+                  exec mlflow server \
+                    --backend-store-uri "\$MLFLOW_BACKEND_STORE_URI" \
+                    --default-artifact-root "\$MLFLOW_DEFAULT_ARTIFACT_ROOT" \
+                    --host 0.0.0.0 \
+                    --port 5000 \
+                    --serve-artifacts
+                resources:
+                  requests:
+                    memory: "1Gi"
+                    cpu: "500m"
+                  limits:
+                    memory: "2Gi"
+                    cpu: "1000m"
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: mlflow
+          namespace: mlflow
+        spec:
+          type: LoadBalancer
+          ports:
+          - port: 80
+            targetPort: 5000
+            name: http
+          selector:
+            app: mlflow
+        EOF
+        
+        echo "✅ MLflow deployed successfully"
 
-    - name: Wait for MLflow Pod
+    - name: Wait for Pod to be Ready
       run: |
         echo "⏳ Waiting for MLflow pod to be ready..."
-        kubectl wait --namespace mlflow --for=condition=ready pod --selector=app.kubernetes.io/name=mlflow --timeout=300s
+        
+        # Wait for deployment to be available
+        kubectl wait --for=condition=available --timeout=600s deployment/mlflow -n mlflow
+        
+        # Get pod status
+        kubectl get pods -n mlflow -o wide
+        
+        echo "✅ MLflow pod is ready"
 
-    - name: Get MLflow Service Status
+    - name: Wait for LoadBalancer and Get URL
       run: |
-        echo "📊 MLflow Service Status:"
-        kubectl get svc mlflow -n mlflow
+        echo "🌐 Waiting for LoadBalancer to get external IP..."
         
-        echo ""
-        echo "📦 MLflow Pod Status:"
-        kubectl get pods -n mlflow
-        
-        echo ""
-        echo "🔍 MLflow Service Details:"
-        kubectl describe svc mlflow -n mlflow
-
-    - name: Get MLflow URL
-      run: |
-        echo "🌐 Getting MLflow URL..."
-        
-        # Wait a bit for LoadBalancer to get external IP
-        sleep 30
-        
-        MLFLOW_URL=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-        
-        if [ -z "$MLFLOW_URL" ]; then
-          echo "⏳ LoadBalancer still provisioning. Current status:"
+        # Wait up to 15 minutes for LoadBalancer
+        for i in {1..30}; do
+          LB_HOSTNAME=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          
+          if [ -n "$LB_HOSTNAME" ]; then
+            echo "✅ LoadBalancer ready!"
+            echo "🌐 MLflow URL: http://$LB_HOSTNAME"
+            echo "LB_HOSTNAME=$LB_HOSTNAME" >> $GITHUB_ENV
+            break
+          fi
+          
+          echo "⏳ Waiting for LoadBalancer... (attempt $i/30)"
           kubectl get svc mlflow -n mlflow
-          echo ""
-          echo "📋 Run this command in a few minutes to get the URL:"
-          echo "kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
-          echo ""
-          echo "🎯 MLflow is deployed! LoadBalancer URL will be ready in 2-3 minutes."
-        else
-          echo ""
-          echo "🎉 MLflow deployed successfully!"
-          echo "🌐 MLflow URL: http://$MLFLOW_URL"
-          echo ""
-          echo "📊 Access your MLflow UI at: http://$MLFLOW_URL"
+          sleep 30
+        done
+
+    - name: Test MLflow Availability
+      run: |
+        if [ -n "$LB_HOSTNAME" ]; then
+          echo "🔍 Testing MLflow at: http://$LB_HOSTNAME"
+          
+          # Give MLflow time to fully start
+          echo "⏳ Waiting for MLflow to fully initialize..."
+          sleep 180
+          
+          # Test connectivity with retries
+          for i in {1..15}; do
+            echo "🧪 Testing connection (attempt $i/15)..."
+            
+            if curl -f -s "http://$LB_HOSTNAME" --max-time 30 --connect-timeout 10 > /dev/null; then
+              echo "✅ MLflow is responding!"
+              echo "🎉 SUCCESS! MLflow is working!"
+              break
+            else
+              echo "⏳ MLflow not ready yet, waiting 30 seconds..."
+              sleep 30
+            fi
+          done
         fi
 
-    - name: Output Success
+    - name: Show Final Status and Instructions
       run: |
         echo ""
-        echo "✅ MLflow deployment completed successfully!"
+        echo "🎯 FINAL STATUS"
+        echo "=============="
+        
         echo ""
-        echo "🎯 Next Steps:"
-        echo "1. Wait 2-3 minutes for LoadBalancer to be fully ready"
-        echo "2. Get MLflow URL: kubectl get svc mlflow -n mlflow"
-        echo "3. Add MLFLOW_TRACKING_URI to GitHub Secrets"
-        echo "4. Run the ML pipeline workflow"
+        echo "📦 Pods:"
+        kubectl get pods -n mlflow -o wide
+        
         echo ""
-        echo "📋 Add this secret to GitHub:"
-        echo "MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_URL" 
+        echo "🌐 Services:"
+        kubectl get svc -n mlflow -o wide
+        
+        echo ""
+        echo "📋 Recent logs:"
+        kubectl logs -n mlflow deployment/mlflow --tail=20 || echo "Logs not available yet"
+        
+        LB_HOSTNAME=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        
+        echo ""
+        echo "=============="
+        
+        if [ -n "$LB_HOSTNAME" ]; then
+          echo "🎉 SUCCESS! MLflow is deployed and working!"
+          echo ""
+          echo "🌐 MLflow URL: http://$LB_HOSTNAME"
+          echo ""
+          echo "📋 NEXT STEPS:"
+          echo "1. Wait 2-3 more minutes for MLflow to fully load"
+          echo "2. Open browser: http://$LB_HOSTNAME"
+          echo "3. You should see MLflow UI"
+          echo "4. Add to GitHub Secrets:"
+          echo "   MLFLOW_TRACKING_URI = http://$LB_HOSTNAME"
+          echo ""
+          echo "🔧 If issues, check logs:"
+          echo "kubectl logs -f deployment/mlflow -n mlflow"
+        else
+          echo "❌ LoadBalancer not ready yet"
+          echo "🔧 Get URL manually:"
+          echo "kubectl get svc mlflow -n mlflow"
+        fi
+        
+        echo ""
+        echo "✅ Deployment complete!" 
