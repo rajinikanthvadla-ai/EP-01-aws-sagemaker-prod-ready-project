@@ -103,6 +103,15 @@ resource "kubernetes_secret" "db_credentials" {
   type = "Opaque"
 }
 
+data "kubernetes_service" "mlflow_service" {
+  depends_on = [helm_release.mlflow]
+
+  metadata {
+    name      = "mlflow"
+    namespace = "mlflow"
+  }
+}
+
 data "aws_eks_cluster" "cluster" {
   name = module.eks.cluster_id
 }

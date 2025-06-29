@@ -61,5 +61,5 @@ output "sagemaker_studio_domain_id" {
 
 output "mlflow_url" {
   description = "The URL of the MLflow UI."
-  value       = helm_release.mlflow.status.load_balancer_ingress[0].hostname
+  value       = "http://${data.kubernetes_service.mlflow_service.status[0].load_balancer[0].ingress[0].hostname}"
 } 
