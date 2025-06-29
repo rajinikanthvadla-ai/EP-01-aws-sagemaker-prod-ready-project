@@ -31,8 +31,7 @@ ui_ecr_repository_url = "911167906047.dkr.ecr.us-east-1.amazonaws.com/abalone-pr
 2. **Click the "Actions" tab**
 3. **Find "Deploy MLflow to EKS" workflow**
 4. **Click "Run workflow" button (top right)**
-5. **Ensure checkbox is checked: "Deploy MLflow to EKS cluster"**
-6. **Click green "Run workflow" button**
+5. **Click green "Run workflow" button**
 
 ### **1.2 Monitor the Deployment (5-10 minutes)**
 
@@ -139,8 +138,7 @@ The workflow will:
 1. **Go to "Actions" tab**
 2. **Find "Deploy Applications to EKS" workflow**
 3. **Click "Run workflow"**
-4. **Ensure checkbox is checked: "Deploy API and UI applications"**
-5. **Click green "Run workflow" button**
+4. **Click green "Run workflow" button**
 
 ### **4.2 Monitor Deployment (10-15 minutes)**
 

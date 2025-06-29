@@ -3,22 +3,11 @@ name: ML Pipeline - Train and Register Model
 on:
   workflow_dispatch:
     inputs:
-      run_pipeline:
-        description: 'Run SageMaker ML Pipeline'
-        required: true
-        default: true
-        type: boolean
       experiment_name:
         description: 'MLflow Experiment Name'
         required: false
         default: 'abalone-age-prediction'
         type: string
-  push:
-    branches: [ main ]
-    paths:
-      - 'src/**'
-      - 'pipelines/**'
-      - 'notebooks/**'
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -31,7 +20,6 @@ jobs:
   ml-pipeline:
     name: Run ML Pipeline
     runs-on: ubuntu-latest
-    if: ${{ inputs.run_pipeline == true || github.event_name == 'push' }}
     
     steps:
     - name: Checkout
@@ -40,8 +28,8 @@ jobs:
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
-        role-session-name: MLPipelineExecution
+        aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Set up Python

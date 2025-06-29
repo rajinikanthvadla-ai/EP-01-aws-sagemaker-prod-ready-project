@@ -2,12 +2,6 @@ name: Deploy MLflow to EKS
 
 on:
   workflow_dispatch:
-    inputs:
-      deploy_mlflow:
-        description: 'Deploy MLflow to EKS cluster'
-        required: true
-        default: true
-        type: boolean
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -17,7 +11,6 @@ jobs:
   deploy-mlflow:
     name: Deploy MLflow
     runs-on: ubuntu-latest
-    if: ${{ inputs.deploy_mlflow == true }}
     
     steps:
     - name: Checkout
@@ -26,8 +19,8 @@ jobs:
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
-        role-session-name: MLflowDeployment
+        aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Setup kubectl
