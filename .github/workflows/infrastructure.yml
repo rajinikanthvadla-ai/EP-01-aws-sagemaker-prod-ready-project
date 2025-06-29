@@ -9,11 +9,11 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_REGION: us-east-1
-  TF_VAR_aws_region: us-east-1
-  TF_VAR_s3_bucket_name: abalone-mlops-artifacts-${{ github.repository_owner }}
-  TF_VAR_github_repo: ${{ github.repository }}
-  TF_VAR_github_pat: ${{ secrets.GITHUB_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+  TF_VAR_s3_bucket_name: ${{ secrets.S3_BUCKET_NAME }}
+  TF_VAR_github_repo: ${{ secrets.GH_REPO }}
+  TF_VAR_github_pat: ${{ secrets.GH_PAT }}
   TF_VAR_oidc_provider_arn: ${{ secrets.OIDC_PROVIDER_ARN }}
 
 jobs:
@@ -33,17 +33,17 @@ jobs:
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Terraform Init
       working-directory: ./infrastructure
       run: |
         terraform init \
-          -backend-config="bucket=${{ env.TF_VAR_s3_bucket_name }}" \
-          -backend-config="key=terraform/state" \
-          -backend-config="region=${{ env.AWS_REGION }}"
+          -backend-config="bucket=${{ secrets.S3_BUCKET_NAME }}" \
+          -backend-config="key=terraform.tfstate" \
+          -backend-config="region=${{ secrets.AWS_REGION }}"
 
     - name: Clean Terraform State (Remove Kubernetes Resources)
       working-directory: ./infrastructure
