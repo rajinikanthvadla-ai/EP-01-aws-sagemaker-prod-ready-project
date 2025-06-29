@@ -1,0 +1,220 @@
+name: Deploy Applications to EKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_apps:
+        description: 'Deploy API and UI applications'
+        required: true
+        default: true
+        type: boolean
+  workflow_run:
+    workflows: ["ML Pipeline - Train and Register Model"]
+    types:
+      - completed
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  EKS_CLUSTER_NAME: abalone-mlops
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+jobs:
+  build-and-push-api:
+    name: Build and Push API
+    runs-on: ubuntu-latest
+    if: ${{ inputs.deploy_apps == true || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      api_image: ${{ steps.build-api.outputs.image }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        role-session-name: BuildAPI
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and Push API Image
+      id: build-api
+      env:
+        ECR_REPOSITORY: abalone-prediction-api
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        echo "🔨 Building API Docker image..."
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./api
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest ./api
+        
+        echo "📤 Pushing API image to ECR..."
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "✅ API image built and pushed successfully"
+
+  build-and-push-ui:
+    name: Build and Push UI
+    runs-on: ubuntu-latest
+    if: ${{ inputs.deploy_apps == true || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      ui_image: ${{ steps.build-ui.outputs.image }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        role-session-name: BuildUI
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and Push UI Image
+      id: build-ui
+      env:
+        ECR_REPOSITORY: abalone-prediction-ui
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        echo "🔨 Building UI Docker image..."
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./ui
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest ./ui
+        
+        echo "📤 Pushing UI image to ECR..."
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "✅ UI image built and pushed successfully"
+
+  deploy-to-eks:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: [build-and-push-api, build-and-push-ui]
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        role-session-name: DeployToEKS
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl for EKS
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+        kubectl cluster-info
+
+    - name: Update Kubernetes manifests
+      env:
+        API_IMAGE: ${{ needs.build-and-push-api.outputs.api_image }}
+        UI_IMAGE: ${{ needs.build-and-push-ui.outputs.ui_image }}
+      run: |
+        echo "🔧 Updating Kubernetes manifests..."
+        
+        # Update API deployment
+        sed -i "s|image: .*abalone-prediction-api.*|image: $API_IMAGE|g" kubernetes/api-deployment.yaml
+        
+        # Update UI deployment  
+        sed -i "s|image: .*abalone-prediction-ui.*|image: $UI_IMAGE|g" kubernetes/ui-deployment.yaml
+        
+        echo "📋 Updated manifests:"
+        echo "API Image: $API_IMAGE"
+        echo "UI Image: $UI_IMAGE"
+
+    - name: Deploy API to EKS
+      run: |
+        echo "🚀 Deploying API to EKS..."
+        kubectl apply -f kubernetes/api-deployment.yaml
+        
+        echo "⏳ Waiting for API deployment to be ready..."
+        kubectl rollout status deployment/abalone-api --timeout=300s
+        
+        echo "✅ API deployed successfully"
+
+    - name: Deploy UI to EKS
+      run: |
+        echo "🚀 Deploying UI to EKS..."
+        kubectl apply -f kubernetes/ui-deployment.yaml
+        
+        echo "⏳ Waiting for UI deployment to be ready..."
+        kubectl rollout status deployment/abalone-ui --timeout=300s
+        
+        echo "✅ UI deployed successfully"
+
+    - name: Get Service URLs
+      run: |
+        echo "🌐 Getting service URLs..."
+        
+        echo "📊 All services:"
+        kubectl get svc --all-namespaces
+        
+        echo ""
+        echo "🔗 Application URLs (may take 2-3 minutes for LoadBalancers):"
+        
+        API_URL=$(kubectl get svc abalone-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Pending...")
+        UI_URL=$(kubectl get svc abalone-ui -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Pending...")
+        
+        echo "🔌 API URL: http://$API_URL"
+        echo "🖥️  UI URL: http://$UI_URL"
+        echo ""
+        echo "📋 If URLs show 'Pending', wait 2-3 minutes and run:"
+        echo "kubectl get svc abalone-api"
+        echo "kubectl get svc abalone-ui"
+
+    - name: Verify Deployments
+      run: |
+        echo "🔍 Verifying deployments..."
+        
+        echo "📊 Deployment status:"
+        kubectl get deployments
+        
+        echo ""
+        echo "📦 Pod status:"
+        kubectl get pods
+        
+        echo ""
+        echo "🔗 Service status:"
+        kubectl get svc
+        
+        echo ""
+        echo "✅ Application deployment completed!"
+
+    - name: Output Summary
+      run: |
+        echo ""
+        echo "🎉 Applications deployed successfully!"
+        echo ""
+        echo "📊 Deployed Components:"
+        echo "- ✅ FastAPI Inference Service"
+        echo "- ✅ Streamlit UI Application"
+        echo ""
+        echo "🔗 Next Steps:"
+        echo "1. Wait 2-3 minutes for LoadBalancers to be ready"
+        echo "2. Get service URLs: kubectl get svc"
+        echo "3. Test API: curl -X POST http://API_URL/predict"
+        echo "4. Access UI: http://UI_URL"
+        echo ""
+        echo "📋 Useful Commands:"
+        echo "kubectl get pods        # Check pod status"
+        echo "kubectl get svc         # Get service URLs"
+        echo "kubectl logs -f deployment/abalone-api  # API logs"
+        echo "kubectl logs -f deployment/abalone-ui   # UI logs" 
