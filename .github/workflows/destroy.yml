@@ -1,11 +1,11 @@
-name: 'Terraform - Provision or Update Infrastructure'
+name: 'Terraform - Destroy Infrastructure'
 
 on:
   workflow_dispatch:
 
 jobs:
-  terraform:
-    name: 'Terraform Apply'
+  terraform-destroy:
+    name: 'Terraform Destroy'
     runs-on: ubuntu-latest
     
     steps:
@@ -32,10 +32,6 @@ jobs:
           -backend-config="region=${{ secrets.AWS_REGION }}"
       working-directory: ./infrastructure
 
-    - name: Terraform Plan
-      run: terraform plan -var="github_pat=${{ secrets.GH_PAT }}" -var="github_repo=${{ secrets.GH_REPO }}" -var="s3_bucket_name=${{ secrets.S3_BUCKET_NAME }}" -out=tfplan
-      working-directory: ./infrastructure
-
-    - name: Terraform Apply
-      run: terraform apply -auto-approve tfplan
+    - name: Terraform Destroy
+      run: terraform destroy -auto-approve -var="github_pat=${{ secrets.GH_PAT }}" -var="github_repo=${{ secrets.GH_REPO }}" -var="s3_bucket_name=${{ secrets.S3_BUCKET_NAME }}"
       working-directory: ./infrastructure 

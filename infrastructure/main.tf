@@ -9,6 +9,7 @@ terraform {
       version = "3.5.1"
     }
   }
+  backend "s3" {} # Configuration will be passed during init
 }
 
 provider "aws" {
