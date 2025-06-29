@@ -1,0 +1,82 @@
+name: ML Pipeline - Train and Register Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_pipeline:
+        description: 'Run SageMaker ML Pipeline'
+        required: true
+        default: true
+        type: boolean
+      experiment_name:
+        description: 'MLflow Experiment Name'
+        required: false
+        default: 'abalone-age-prediction'
+        type: string
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'pipelines/**'
+      - 'notebooks/**'
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+  SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+  MODEL_PACKAGE_GROUP_NAME: ${{ secrets.MODEL_PACKAGE_GROUP_NAME }}
+  S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+
+jobs:
+  ml-pipeline:
+    name: Run ML Pipeline
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_pipeline == true || github.event_name == 'push' }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        role-session-name: MLPipelineExecution
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r pipelines/requirements.txt
+
+    - name: Execute SageMaker Pipeline
+      run: |
+        echo "🚀 Executing SageMaker ML Pipeline..."
+        cd pipelines/abalone
+        
+        export MLFLOW_EXPERIMENT_NAME="${{ inputs.experiment_name || 'abalone-age-prediction' }}"
+        export GITHUB_RUN_ID="${{ github.run_id }}"
+        export GITHUB_SHA="${{ github.sha }}"
+        
+        python run.py
+
+    - name: Output Pipeline Results
+      run: |
+        echo ""
+        echo "🎉 ML Pipeline Execution Completed!"
+        echo ""
+        echo "📊 Pipeline Summary:"
+        echo "- Experiment: ${{ inputs.experiment_name || 'abalone-age-prediction' }}"
+        echo "- MLflow URI: ${{ env.MLFLOW_TRACKING_URI }}"
+        echo "- AWS Region: ${{ env.AWS_REGION }}"
+        echo "- GitHub Run ID: ${{ github.run_id }}"
+        echo ""
+        echo "🔗 Next Steps:"
+        echo "1. Check MLflow UI for experiment results"
+        echo "2. Approve model in MLflow Model Registry (if needed)"
+        echo "3. Deploy applications using the Deploy Applications workflow" 

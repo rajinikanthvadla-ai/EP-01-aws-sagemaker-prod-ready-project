@@ -67,24 +67,37 @@ MODEL_PACKAGE_GROUP_NAME=AbaloneModelPackageGroup
 
 ---
 
-## 🎯 **Step 3: Run the SageMaker ML Pipeline**
+## 🎯 **Step 3: Run the SageMaker ML Pipeline via GitHub Actions**
 
-### **Trigger the Pipeline:**
+### **🚀 Trigger the Pipeline:**
 
-```bash
-# Option 1: Via GitHub Actions (Recommended)
-# Push code to trigger the build pipeline:
-git add . && git commit -m "Trigger ML pipeline" && git push
+**Option 1: Manual Trigger (Recommended)**
+1. **Go to your GitHub repository**
+2. **Click "Actions" tab**
+3. **Find "ML Pipeline - Train and Register Model" workflow**
+4. **Click "Run workflow"**
+5. **Optionally customize experiment name**
+6. **Click "Run workflow" button**
 
-# Option 2: Manual execution
-cd pipelines/abalone
-python run.py
-```
+**Option 2: Automatic Trigger**
+- Pipeline automatically runs when you push changes to:
+  - `src/**` (ML code)
+  - `pipelines/**` (Pipeline definitions)
+  - `notebooks/**` (Jupyter notebooks)
 
-### **Monitor Pipeline:**
+### **📊 Monitor Pipeline:**
+- **GitHub Actions**: Real-time pipeline progress and logs
 - **SageMaker Console**: Check pipeline execution status
 - **MLflow UI**: View experiment tracking and metrics
-- **GitHub Actions**: Monitor CI/CD pipeline progress
+
+### **🎯 Pipeline Steps:**
+The workflow will automatically:
+- ✅ Set up Python environment
+- ✅ Install ML dependencies
+- ✅ Execute SageMaker pipeline
+- ✅ Train XGBoost model
+- ✅ Log metrics to MLflow
+- ✅ Register model (if performance criteria met)
 
 ---
 
