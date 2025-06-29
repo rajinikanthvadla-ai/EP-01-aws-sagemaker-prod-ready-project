@@ -1,6 +1,6 @@
 output "s3_bucket_name" {
   description = "The name of the S3 bucket created for pipeline artifacts."
-  value       = aws_s3_bucket.pipeline_artifacts.bucket
+  value       = data.aws_s3_bucket.existing_bucket.bucket
 }
 
 output "model_package_group_name" {

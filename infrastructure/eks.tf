@@ -82,7 +82,7 @@ resource "helm_release" "mlflow" {
   }
   set {
     name  = "default-artifact-root"
-    value = "s3://${aws_s3_bucket.pipeline_artifacts.bucket}/mlflow"
+    value = "s3://${data.aws_s3_bucket.existing_bucket.bucket}/mlflow"
   }
   set {
     name  = "service.type"
