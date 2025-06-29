@@ -12,58 +12,36 @@ Congratulations! Your infrastructure is successfully deployed. Now let's deploy 
 
 ---
 
-## 🎯 **Step 1: Deploy MLflow to EKS**
+## 🎯 **Step 1: Deploy MLflow to EKS via GitHub Actions**
 
-### **Option A: Automated Script (Recommended)**
+### **🚀 Automated Deployment (Recommended)**
 
-```bash
-# Make the script executable and run it
-chmod +x scripts/deploy-mlflow.sh
-./scripts/deploy-mlflow.sh
-```
+1. **Go to your GitHub repository**
+2. **Click on "Actions" tab**
+3. **Find "Deploy MLflow to EKS" workflow**
+4. **Click "Run workflow"**
+5. **Ensure "Deploy MLflow to EKS cluster" is checked**
+6. **Click "Run workflow" button**
 
-### **Option B: Manual Deployment**
+### **📊 Monitor Deployment:**
 
-```bash
-# Configure kubectl
-aws eks update-kubeconfig --region us-east-1 --name abalone-mlops
-
-# Add Helm repository
-helm repo add bitnami https://charts.bitnami.com/bitnami
-helm repo update
-
-# Get database details
-cd infrastructure
-DB_HOST=$(terraform output -raw mlflow_db_endpoint | cut -d':' -f1)
-DB_PASSWORD=$(terraform output -raw db_password)
-
-# Deploy MLflow
-helm upgrade --install mlflow bitnami/mlflow \
-  --create-namespace --namespace mlflow \
-  --set tracking.auth.enabled=false \
-  --set postgresql.enabled=false \
-  --set externalDatabase.host="$DB_HOST" \
-  --set externalDatabase.port=5432 \
-  --set externalDatabase.database="mlflowdb" \
-  --set externalDatabase.user="mlflow" \
-  --set externalDatabase.password="$DB_PASSWORD" \
-  --set service.type=LoadBalancer \
-  --wait --timeout=10m
-
-# Get MLflow URL
-kubectl get svc mlflow -n mlflow
-```
+The GitHub Actions workflow will:
+- ✅ Configure kubectl for your EKS cluster
+- ✅ Get database connection details from Terraform
+- ✅ Deploy MLflow using Bitnami Helm chart
+- ✅ Create LoadBalancer service
+- ✅ Output the MLflow URL
 
 ### **🌐 Getting MLflow URL:**
 
-```bash
-# Wait for LoadBalancer to be ready (may take 2-3 minutes)
-kubectl get svc mlflow -n mlflow -w
-
-# Get the URL
-MLFLOW_URL=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-echo "MLflow URL: http://$MLFLOW_URL"
-```
+After the workflow completes:
+1. **Check the workflow logs** for the MLflow URL
+2. **Look for this output:**
+   ```
+   🎉 MLflow deployed successfully!
+   🌐 MLflow URL: http://YOUR_LOADBALANCER_URL
+   ```
+3. **If LoadBalancer is still provisioning**, wait 2-3 minutes and check the workflow logs again
 
 ---
 

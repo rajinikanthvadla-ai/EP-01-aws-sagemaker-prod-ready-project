@@ -1,0 +1,141 @@
+name: Deploy MLflow to EKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_mlflow:
+        description: 'Deploy MLflow to EKS cluster'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  EKS_CLUSTER_NAME: abalone-mlops
+
+jobs:
+  deploy-mlflow:
+    name: Deploy MLflow
+    runs-on: ubuntu-latest
+    if: ${{ inputs.deploy_mlflow == true }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        role-session-name: MLflowDeployment
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Configure kubectl for EKS
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+        kubectl cluster-info
+
+    - name: Setup Terraform to get outputs
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+        terraform_wrapper: false
+
+    - name: Get Database Connection Details
+      working-directory: ./infrastructure
+      run: |
+        terraform init \
+          -backend-config="bucket=${{ secrets.S3_BUCKET_NAME }}" \
+          -backend-config="key=terraform.tfstate" \
+          -backend-config="region=${{ secrets.AWS_REGION }}"
+        
+        DB_ENDPOINT=$(terraform output -raw mlflow_db_endpoint)
+        DB_HOST=$(echo $DB_ENDPOINT | cut -d':' -f1)
+        DB_PASSWORD=$(terraform output -raw db_password)
+        
+        echo "DB_HOST=$DB_HOST" >> $GITHUB_ENV
+        echo "::add-mask::$DB_PASSWORD"
+        echo "DB_PASSWORD=$DB_PASSWORD" >> $GITHUB_ENV
+
+    - name: Add Bitnami Helm Repository
+      run: |
+        helm repo add bitnami https://charts.bitnami.com/bitnami
+        helm repo update
+
+    - name: Create MLflow Namespace
+      run: |
+        kubectl create namespace mlflow --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy MLflow
+      run: |
+        helm upgrade --install mlflow bitnami/mlflow \
+          --namespace mlflow \
+          --set tracking.auth.enabled=false \
+          --set postgresql.enabled=false \
+          --set externalDatabase.host="${{ env.DB_HOST }}" \
+          --set externalDatabase.port=5432 \
+          --set externalDatabase.database="mlflowdb" \
+          --set externalDatabase.user="mlflow" \
+          --set externalDatabase.password="${{ env.DB_PASSWORD }}" \
+          --set service.type=LoadBalancer \
+          --set service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="nlb" \
+          --wait --timeout=10m
+
+    - name: Get MLflow Service URL
+      run: |
+        echo "Waiting for LoadBalancer to be ready..."
+        kubectl wait --namespace mlflow --for=condition=ready pod --selector=app.kubernetes.io/name=mlflow --timeout=300s
+        
+        # Wait a bit more for LoadBalancer to get external IP
+        sleep 60
+        
+        MLFLOW_URL=$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        
+        if [ -z "$MLFLOW_URL" ]; then
+          echo "⏳ LoadBalancer still provisioning. Service details:"
+          kubectl get svc mlflow -n mlflow
+          echo ""
+          echo "📋 Run this command later to get the URL:"
+          echo "kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
+        else
+          echo ""
+          echo "🎉 MLflow deployed successfully!"
+          echo "🌐 MLflow URL: http://$MLFLOW_URL"
+          echo ""
+          echo "📊 Access your MLflow UI at: http://$MLFLOW_URL"
+          
+          # Save URL as output
+          echo "mlflow_url=http://$MLFLOW_URL" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Verify MLflow Deployment
+      run: |
+        echo "📊 MLflow Deployment Status:"
+        kubectl get all -n mlflow
+        echo ""
+        echo "🔍 MLflow Service Details:"
+        kubectl describe svc mlflow -n mlflow
+
+    - name: Output Next Steps
+      run: |
+        echo ""
+        echo "✅ MLflow deployment completed!"
+        echo ""
+        echo "🎯 Next Steps:"
+        echo "1. Wait 2-3 minutes for LoadBalancer to be fully ready"
+        echo "2. Get MLflow URL: kubectl get svc mlflow -n mlflow"
+        echo "3. Add MLFLOW_TRACKING_URI to GitHub Secrets"
+        echo "4. Run the ML pipeline workflow"
+        echo ""
+        echo "📋 Add this secret to GitHub:"
+        echo "MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_URL" 
