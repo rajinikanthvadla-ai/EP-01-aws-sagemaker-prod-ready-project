@@ -1,4 +1,10 @@
 terraform {
+  required_version = ">= 1.0"
+  
+  backend "s3" {
+    # This will be configured via backend config file or environment variables
+  }
+  
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -6,21 +12,11 @@ terraform {
     }
     random = {
       source  = "hashicorp/random"
-      version = "3.5.1"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "2.11.0"
-    }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "2.23.0"
+      version = "~> 3.1"
     }
     archive = {
       source  = "hashicorp/archive"
       version = "2.4.0"
     }
   }
-
-  backend "s3" {} # Configuration will be passed during init
 } 
