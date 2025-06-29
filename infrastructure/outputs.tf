@@ -59,7 +59,8 @@ output "sagemaker_studio_domain_id" {
   value       = aws_sagemaker_domain.studio_domain.id
 }
 
-output "mlflow_url" {
-  description = "The URL of the MLflow UI."
-  value       = "http://${data.kubernetes_service.mlflow.status[0].load_balancer[0].ingress[0].hostname}"
+output "mlflow_db_connection_string" {
+  description = "Connection string for MLflow database (for manual MLflow deployment)."
+  value       = "postgresql://${aws_db_instance.mlflow_db.username}:${random_password.db_password.result}@${aws_db_instance.mlflow_db.address}:5432/${aws_db_instance.mlflow_db.db_name}"
+  sensitive   = true
 } 
