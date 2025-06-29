@@ -1,0 +1,9 @@
+sagemaker
+boto3
+scikit-learn
+pandas
+xgboost
+joblib
+mlflow
+psycopg2-binary
+SQLAlchemy 

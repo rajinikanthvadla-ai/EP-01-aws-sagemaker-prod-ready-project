@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: abalone-ui-deployment
+  labels:
+    app: abalone-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: abalone-ui
+  template:
+    metadata:
+      labels:
+        app: abalone-ui
+    spec:
+      containers:
+      - name: abalone-ui
+        image: <<AWS_ACCOUNT_ID>>.dkr.ecr.<<AWS_REGION>>.amazonaws.com/abalone-prediction-ui:latest
+        ports:
+        - containerPort: 8501
+        env:
+        - name: API_ENDPOINT
+          value: "http://abalone-api-service:80/predict"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: abalone-ui-service
+spec:
+  selector:
+    app: abalone-ui
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8501
+  type: LoadBalancer # Expose externally for user access 

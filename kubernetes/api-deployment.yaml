@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: abalone-api-deployment
+  labels:
+    app: abalone-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: abalone-api
+  template:
+    metadata:
+      labels:
+        app: abalone-api
+    spec:
+      containers:
+      - name: abalone-api
+        image: <<AWS_ACCOUNT_ID>>.dkr.ecr.<<AWS_REGION>>.amazonaws.com/abalone-prediction-api:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: SAGEMAKER_ENDPOINT_NAME
+          value: "abalone-production"
+        - name: AWS_REGION
+          value: "<<AWS_REGION>>"
+        - name: DB_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: endpoint
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: abalone-api-service
+spec:
+  selector:
+    app: abalone-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP # Or LoadBalancer for external access 

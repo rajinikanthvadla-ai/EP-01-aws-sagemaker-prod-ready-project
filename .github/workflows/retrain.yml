@@ -1,0 +1,43 @@
+name: MLOps - Scheduled Retraining
+
+on:
+  workflow_dispatch: # Allows manual triggering
+  schedule:
+    - cron: '0 0 * * 1' # Runs every Monday at midnight UTC
+
+jobs:
+  scheduled-retraining:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
+        aws-region: <<AWS_REGION>>
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install sagemaker boto3
+
+    - name: Run SageMaker Pipeline for Retraining
+      run: python pipelines/abalone/run.py
+      env:
+        SAGEMAKER_ROLE_ARN: <<YOUR_SAGEMAKER_ROLE_ARN>>
+        S3_BUCKET: <<YOUR_S3_BUCKET>>
+        AWS_REGION: <<AWS_REGION>>
+        DB_ENDPOINT: ${{ secrets.DB_ENDPOINT }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }} 

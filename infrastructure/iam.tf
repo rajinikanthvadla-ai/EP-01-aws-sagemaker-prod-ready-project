@@ -1,0 +1,125 @@
+# IAM Role for SageMaker
+resource "aws_iam_role" "sagemaker_role" {
+  name = "SageMakerExecutionRole"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action = "sts:AssumeRole",
+      Effect = "Allow",
+      Principal = {
+        Service = "sagemaker.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "sagemaker_full_access" {
+  role       = aws_iam_role.sagemaker_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "sagemaker_s3_access" {
+  role       = aws_iam_role.sagemaker_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+}
+
+# IAM Role for Lambda Function
+resource "aws_iam_role" "lambda_role" {
+  name = "LambdaTriggerRole"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action = "sts:AssumeRole",
+      Effect = "Allow",
+      Principal = {
+        Service = "lambda.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_secrets_access" {
+  role       = aws_iam_role.lambda_role.name
+  # In production, scope this down to the specific secret
+  policy_arn = "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_logging" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# IAM Role for GitHub Actions (OIDC)
+resource "aws_iam_role" "github_actions_role" {
+  name = "GitHubActionRole"
+  assume_role_policy = data.aws_iam_policy_document.github_actions_assume_role_policy.json
+}
+
+data "aws_iam_policy_document" "github_actions_assume_role_policy" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(var.oidc_provider_arn, "/^(.*):o-/", "aud")}:sub"
+      values   = ["repo:${var.github_repo}:ref:refs/heads/main"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "github_actions_policy" {
+  name = "GitHubActionsPolicy"
+  role = aws_iam_role.github_actions_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "sagemaker:StartPipelineExecution",
+          "sagemaker:UpdateEndpoint",
+          "sagemaker:CreateEndpoint",
+          "sagemaker:CreateEndpointConfig",
+          "sagemaker:CreateModel",
+          "sagemaker:DescribeModelPackage",
+          "cloudformation:*"
+        ],
+        Effect   = "Allow",
+        Resource = "*" # Scope down in production
+      },
+      {
+        Action   = "ecr:GetAuthorizationToken",
+        Effect   = "Allow",
+        Resource = "*"
+      },
+      {
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:GetRepositoryPolicy",
+          "ecr:DescribeRepositories",
+          "ecr:ListImages",
+          "ecr:DescribeImages",
+          "ecr:BatchGetImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImage"
+        ],
+        Effect   = "Allow",
+        Resource = [
+          aws_ecr_repository.api_repository.arn,
+          aws_ecr_repository.ui_repository.arn
+        ]
+      },
+      {
+        Action = "eks:DescribeCluster",
+        Effect = "Allow",
+        Resource = "*" # Scope to specific cluster ARN in production
+      }
+    ]
+  })
+} 

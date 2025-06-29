@@ -1,0 +1,39 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  This CloudFormation template creates a SageMaker endpoint for the Abalone model.
+
+Parameters:
+  ModelPackageArn:
+    Type: String
+    Description: The ARN of the approved SageMaker Model Package.
+
+Resources:
+  ProductionModel:
+    Type: 'AWS::SageMaker::Model'
+    Properties:
+      PrimaryContainer:
+        ModelPackageName: !Ref ModelPackageArn
+      ExecutionRoleArn: <<YOUR_SAGEMAKER_ROLE_ARN>>
+      ModelName: !Sub 'abalone-production-model-${AWS::StackName}'
+
+  ProductionEndpointConfig:
+    Type: 'AWS::SageMaker::EndpointConfig'
+    Properties:
+      EndpointConfigName: !Sub 'abalone-production-endpoint-config-${AWS::StackName}'
+      ProductionVariants:
+        - VariantName: AllTraffic
+          ModelName: !GetAtt ProductionModel.ModelName
+          InitialInstanceCount: 1
+          InstanceType: 'ml.m5.large'
+          InitialVariantWeight: 1.0
+
+  ProductionEndpoint:
+    Type: 'AWS::SageMaker::Endpoint'
+    Properties:
+      EndpointName: 'abalone-production'
+      EndpointConfigName: !GetAtt ProductionEndpointConfig.EndpointConfigName
+
+Outputs:
+  EndpointName:
+    Description: The name of the SageMaker endpoint.
+    Value: !GetAtt ProductionEndpoint.EndpointName 
