@@ -47,6 +47,26 @@ jobs:
         terraform_version: 1.5.0
         terraform_wrapper: false
 
+    - name: Pre-flight Infrastructure Check
+      run: |
+        echo "🔍 Pre-flight infrastructure check..."
+        
+        # Check if S3 bucket exists
+        if aws s3api head-bucket --bucket "${{ secrets.S3_BUCKET_NAME }}" 2>/dev/null; then
+          echo "✅ S3 bucket exists: ${{ secrets.S3_BUCKET_NAME }}"
+        else
+          echo "⚠️ S3 bucket not found: ${{ secrets.S3_BUCKET_NAME }}"
+        fi
+        
+        # Check if terraform state exists
+        if aws s3api head-object --bucket "${{ secrets.S3_BUCKET_NAME }}" --key "terraform.tfstate" 2>/dev/null; then
+          echo "✅ Terraform state file exists"
+          echo "STATE_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "⚠️ Terraform state file not found - infrastructure may not exist"
+          echo "STATE_EXISTS=false" >> $GITHUB_ENV
+        fi
+
     - name: Configure kubectl for EKS (if exists)
       run: |
         echo "🔍 Checking if EKS cluster exists..."
@@ -165,6 +185,7 @@ jobs:
         done
 
     - name: Initialize Terraform
+      if: env.STATE_EXISTS == 'true'
       working-directory: ./infrastructure
       run: |
         echo "🔧 Initializing Terraform..."
@@ -174,6 +195,7 @@ jobs:
           -backend-config="region=${{ secrets.AWS_REGION }}"
 
     - name: Terraform Destroy with Retry
+      if: env.STATE_EXISTS == 'true'
       working-directory: ./infrastructure
       run: |
         echo "🗑️ Starting Terraform destroy with retry logic..."
@@ -186,12 +208,15 @@ jobs:
           while [ $attempt -le $max_attempts ]; do
             echo "🔄 Terraform destroy attempt $attempt/$max_attempts..."
             
-            if terraform destroy -auto-approve \
-              -var="aws_region=${{ secrets.AWS_REGION }}" \
-              -var="github_repo=${{ github.repository }}" \
-              -target=module.eks \
-              -target=aws_db_instance.mlflow_db \
-              -target=aws_lambda_function.trigger_deployment; then
+                         if terraform destroy -auto-approve \
+               -var="aws_region=${{ secrets.AWS_REGION }}" \
+               -var="s3_bucket_name=${{ secrets.S3_BUCKET_NAME }}" \
+               -var="github_repo=${{ github.repository }}" \
+               -var="github_pat=${{ secrets.GH_PAT }}" \
+               -var="oidc_provider_arn=${{ secrets.OIDC_PROVIDER_ARN }}" \
+               -target=module.eks \
+               -target=aws_db_instance.mlflow_db \
+               -target=aws_lambda_function.trigger_deployment; then
               echo "✅ Targeted resources destroyed successfully"
               break
             else
@@ -213,9 +238,12 @@ jobs:
           while [ $attempt -le $max_attempts ]; do
             echo "🗑️ Full destroy attempt $attempt/$max_attempts..."
             
-            if terraform destroy -auto-approve \
-              -var="aws_region=${{ secrets.AWS_REGION }}" \
-              -var="github_repo=${{ github.repository }}"; then
+                         if terraform destroy -auto-approve \
+               -var="aws_region=${{ secrets.AWS_REGION }}" \
+               -var="s3_bucket_name=${{ secrets.S3_BUCKET_NAME }}" \
+               -var="github_repo=${{ github.repository }}" \
+               -var="github_pat=${{ secrets.GH_PAT }}" \
+               -var="oidc_provider_arn=${{ secrets.OIDC_PROVIDER_ARN }}"; then
               echo "✅ Infrastructure destroyed successfully!"
               return 0
             else

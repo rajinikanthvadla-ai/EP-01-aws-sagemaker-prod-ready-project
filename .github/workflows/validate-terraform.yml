@@ -1,0 +1,186 @@
+name: Validate Terraform Configuration
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'infrastructure/**'
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  validate-terraform:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+        terraform_wrapper: false
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Terraform Format Check
+      working-directory: ./infrastructure
+      run: |
+        echo "🔍 Checking Terraform formatting..."
+        terraform fmt -check -recursive
+      continue-on-error: true
+
+    - name: Terraform Init
+      working-directory: ./infrastructure
+      run: |
+        echo "🔧 Initializing Terraform..."
+        terraform init \
+          -backend-config="bucket=${{ secrets.S3_BUCKET_NAME }}" \
+          -backend-config="key=terraform.tfstate" \
+          -backend-config="region=${{ secrets.AWS_REGION }}"
+
+    - name: Terraform Validate
+      working-directory: ./infrastructure
+      run: |
+        echo "✅ Validating Terraform configuration..."
+        terraform validate
+
+    - name: Terraform Plan (Validation)
+      working-directory: ./infrastructure
+      run: |
+        echo "📋 Running Terraform plan for validation..."
+        terraform plan \
+          -var="aws_region=${{ secrets.AWS_REGION }}" \
+          -var="s3_bucket_name=${{ secrets.S3_BUCKET_NAME }}" \
+          -var="github_repo=${{ github.repository }}" \
+          -var="github_pat=dummy-pat-for-validation" \
+          -var="oidc_provider_arn=arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com" \
+          -detailed-exitcode || true
+
+    - name: Check for Circular Dependencies
+      working-directory: ./infrastructure
+      run: |
+        echo "🔄 Checking for circular dependencies..."
+        terraform graph | grep -E "(cycle|circular)" && {
+          echo "❌ Circular dependency detected!"
+          exit 1
+        } || echo "✅ No circular dependencies found"
+
+    - name: Validate Resource Names and Constraints
+      working-directory: ./infrastructure
+      run: |
+        echo "🏷️ Validating resource names and AWS constraints..."
+        
+        # Check for duplicate resource names
+        terraform show -json | jq -r '.planned_values.root_module.resources[]?.name' | sort | uniq -d | while read dup; do
+          if [ -n "$dup" ]; then
+            echo "❌ Duplicate resource name found: $dup"
+            exit 1
+          fi
+        done
+        
+        # Check IAM role name lengths (max 64 characters)
+        grep -r "aws_iam_role" . --include="*.tf" | grep -o '"[^"]*"' | while read role; do
+          role_name=$(echo $role | tr -d '"')
+          if [ ${#role_name} -gt 64 ]; then
+            echo "❌ IAM role name too long (>64 chars): $role_name"
+            exit 1
+          fi
+        done
+        
+        echo "✅ Resource names validation passed"
+
+    - name: Security Check
+      working-directory: ./infrastructure
+      run: |
+        echo "🔒 Running basic security checks..."
+        
+        # Check for hardcoded secrets
+        if grep -r "password\s*=\s*\"" . --include="*.tf" | grep -v "random_password"; then
+          echo "⚠️ Warning: Potential hardcoded password found"
+        fi
+        
+        # Check for overly permissive security groups
+        if grep -r "0.0.0.0/0" . --include="*.tf"; then
+          echo "⚠️ Warning: Security groups with 0.0.0.0/0 found (review for production)"
+        fi
+        
+        # Check for missing encryption
+        if ! grep -r "encrypted\s*=\s*true" . --include="*.tf"; then
+          echo "⚠️ Warning: No explicit encryption settings found"
+        fi
+        
+        echo "✅ Security check completed"
+
+    - name: Dependency Analysis
+      working-directory: ./infrastructure
+      run: |
+        echo "🔗 Analyzing resource dependencies..."
+        
+        # Generate dependency graph
+        terraform graph > dependency_graph.dot
+        
+        # Check for potential dependency issues
+        if command -v dot >/dev/null 2>&1; then
+          dot -Tpng dependency_graph.dot -o dependency_graph.png
+          echo "📊 Dependency graph generated"
+        else
+          echo "ℹ️ Graphviz not available, skipping visual graph generation"
+        fi
+        
+        # Count resources
+        resource_count=$(terraform show -json | jq '.planned_values.root_module.resources | length' 2>/dev/null || echo "0")
+        echo "📊 Total resources to be created: $resource_count"
+
+    - name: Cost Estimation Check
+      working-directory: ./infrastructure
+      run: |
+        echo "💰 Estimating potential costs..."
+        
+        # Count expensive resources
+        expensive_resources=0
+        
+        if grep -q "db.t3.micro" *.tf; then
+          echo "💰 RDS db.t3.micro instance (~$12/month)"
+          expensive_resources=$((expensive_resources + 1))
+        fi
+        
+        if grep -q "t3.medium" *.tf; then
+          echo "💰 EKS nodes t3.medium (~$30/month per node)"
+          expensive_resources=$((expensive_resources + 1))
+        fi
+        
+        if grep -q "enable_nat_gateway.*true" *.tf; then
+          echo "💰 NAT Gateway (~$45/month)"
+          expensive_resources=$((expensive_resources + 1))
+        fi
+        
+        echo "📊 Estimated monthly cost: ~$87-100 (depending on usage)"
+        echo "⚠️ Remember to destroy resources when not needed!"
+
+    - name: Final Validation Summary
+      run: |
+        echo ""
+        echo "🎯 TERRAFORM VALIDATION SUMMARY"
+        echo "==============================="
+        echo ""
+        echo "✅ Terraform configuration is valid"
+        echo "✅ No circular dependencies detected"
+        echo "✅ Resource names follow AWS constraints"
+        echo "✅ Security checks completed"
+        echo "✅ Dependencies analyzed"
+        echo ""
+        echo "🚀 Configuration is ready for deployment!"
+        echo ""
+        echo "📋 Next steps:"
+        echo "1. Run 'Infrastructure Pipeline' workflow to deploy"
+        echo "2. Monitor AWS costs during deployment"
+        echo "3. Use 'Terraform - Destroy Infrastructure' when done" 

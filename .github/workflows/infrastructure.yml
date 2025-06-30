@@ -1,20 +1,10 @@
 name: Infrastructure Pipeline
 
 on:
-  push:
-    branches: [ main ]
-    paths: 
-      - 'infrastructure/**'
-      - '.github/workflows/infrastructure.yml'
   workflow_dispatch:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
-  TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
-  TF_VAR_s3_bucket_name: ${{ secrets.S3_BUCKET_NAME }}
-  TF_VAR_github_repo: ${{ secrets.GH_REPO }}
-  TF_VAR_github_pat: ${{ secrets.GH_PAT }}
-  TF_VAR_oidc_provider_arn: ${{ secrets.OIDC_PROVIDER_ARN }}
 
 jobs:
   terraform:
@@ -29,6 +19,7 @@ jobs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.5.0
+        terraform_wrapper: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -45,19 +36,16 @@ jobs:
           -backend-config="key=terraform.tfstate" \
           -backend-config="region=${{ secrets.AWS_REGION }}"
 
-    - name: Clean Terraform State (Remove Kubernetes Resources)
-      working-directory: ./infrastructure
-      run: |
-        # Remove any leftover Kubernetes/Helm resources from state
-        terraform state list | grep -E "(kubernetes_|helm_|data.kubernetes_)" | while read resource; do
-          echo "Removing $resource from state..."
-          terraform state rm "$resource" || true
-        done
-      continue-on-error: true
-
     - name: Terraform Plan
       working-directory: ./infrastructure
-      run: terraform plan -out=tfplan
+      run: |
+        terraform plan \
+          -var="aws_region=${{ secrets.AWS_REGION }}" \
+          -var="s3_bucket_name=${{ secrets.S3_BUCKET_NAME }}" \
+          -var="github_repo=${{ github.repository }}" \
+          -var="github_pat=${{ secrets.GH_PAT }}" \
+          -var="oidc_provider_arn=${{ secrets.OIDC_PROVIDER_ARN }}" \
+          -out=tfplan
 
     - name: Terraform Apply
       working-directory: ./infrastructure
@@ -66,5 +54,14 @@ jobs:
     - name: Output Infrastructure Details
       working-directory: ./infrastructure
       run: |
-        echo "Infrastructure deployment completed!"
-        terraform output 
+        echo "🎉 Infrastructure deployment completed successfully!"
+        echo ""
+        echo "📋 Infrastructure Outputs:"
+        echo "=========================="
+        terraform output
+        echo ""
+        echo "✅ Next Steps:"
+        echo "1. Copy the outputs above"
+        echo "2. Add ECR repository URLs to GitHub Secrets"
+        echo "3. Run 'Deploy MLflow to EKS' workflow"
+        echo "4. Run ML Pipeline workflow to train models" 

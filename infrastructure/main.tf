@@ -41,6 +41,7 @@ resource "aws_ecr_repository" "ui_repository" {
 }
 
 resource "aws_db_instance" "mlflow_db" {
+  identifier           = "mlflow-database"
   allocated_storage    = 20
   engine               = "postgres"
   engine_version       = data.aws_rds_engine_version.postgresql.version
@@ -52,21 +53,44 @@ resource "aws_db_instance" "mlflow_db" {
   delete_automated_backups = true
   publicly_accessible = true # For simplicity in this lab. In production, use private endpoints.
   vpc_security_group_ids = [aws_security_group.db_sg.id]
+  db_subnet_group_name = aws_db_subnet_group.mlflow_db_subnet_group.name
 
   lifecycle {
     prevent_destroy = false
+  }
+
+  depends_on = [
+    aws_security_group.db_sg,
+    aws_db_subnet_group.mlflow_db_subnet_group
+  ]
+}
+
+resource "aws_db_subnet_group" "mlflow_db_subnet_group" {
+  name       = "mlflow-db-subnet-group"
+  subnet_ids = module.vpc.public_subnets
+
+  tags = {
+    Name = "MLflow DB subnet group"
   }
 }
 
 resource "aws_security_group" "db_sg" {
   name        = "mlflow-db-sg"
-  description = "Allow all inbound traffic for MLflow DB" # Restrict in production
+  description = "Allow PostgreSQL traffic for MLflow DB"
+  vpc_id      = module.vpc.vpc_id
 
   ingress {
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Allow all IPs. Restrict in production.
+    cidr_blocks = [module.vpc.vpc_cidr_block] # Allow VPC traffic
+  }
+
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Allow all IPs for simplicity in lab
   }
 
   egress {
@@ -74,6 +98,10 @@ resource "aws_security_group" "db_sg" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "MLflow Database Security Group"
   }
 }
 
