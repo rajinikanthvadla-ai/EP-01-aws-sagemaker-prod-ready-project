@@ -1,9 +1,7 @@
 name: MLOps CI - Build and Trigger SageMaker Pipeline
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   build-and-run-pipeline:
@@ -15,18 +13,18 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
-        aws-region: <<AWS_REGION>>
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.8'
+        python-version: '3.9'
 
     - name: Install dependencies
       run: |
@@ -36,8 +34,8 @@ jobs:
     - name: Run SageMaker Pipeline
       run: python pipelines/abalone/run.py
       env:
-        SAGEMAKER_ROLE_ARN: <<YOUR_SAGEMAKER_ROLE_ARN>>
-        S3_BUCKET: <<YOUR_S3_BUCKET>>
-        AWS_REGION: <<AWS_REGION>>
+        SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+        S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
+        AWS_REGION: ${{ secrets.AWS_REGION }}
         DB_ENDPOINT: ${{ secrets.DB_ENDPOINT }}
         DB_PASSWORD: ${{ secrets.DB_PASSWORD }} 

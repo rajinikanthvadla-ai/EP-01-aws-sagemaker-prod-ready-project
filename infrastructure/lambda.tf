@@ -50,8 +50,13 @@ resource "aws_lambda_permission" "allow_eventbridge" {
 }
 
 resource "aws_secretsmanager_secret" "github_pat" {
-  name = "github-pat-for-mlops"
-  description = "GitHub PAT for triggering repository_dispatch events"
+  name                    = "github-pat-for-mlops"
+  description             = "GitHub PAT for triggering repository_dispatch events"
+  recovery_window_in_days = 0  # Allow immediate deletion and recreation
+  
+  lifecycle {
+    prevent_destroy = false
+  }
 }
 
 resource "aws_secretsmanager_secret_version" "github_pat_version" {

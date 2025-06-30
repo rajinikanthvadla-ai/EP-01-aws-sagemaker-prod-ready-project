@@ -1,0 +1,199 @@
+name: Emergency Infrastructure Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_emergency_cleanup:
+        description: 'Type "EMERGENCY" to confirm emergency cleanup'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  EKS_CLUSTER_NAME: abalone-mlops
+
+jobs:
+  emergency-cleanup:
+    name: Emergency Cleanup
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Validate Emergency Confirmation
+      run: |
+        if [ "${{ github.event.inputs.confirm_emergency_cleanup }}" != "EMERGENCY" ]; then
+          echo "❌ Emergency confirmation failed. You must type 'EMERGENCY' to proceed."
+          exit 1
+        fi
+        echo "✅ Emergency confirmation validated"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Handle EKS Cluster in DELETING State
+      run: |
+        echo "🔍 Checking EKS cluster status..."
+        
+        if aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          CLUSTER_STATUS=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.status' --output text)
+          echo "📊 Current EKS cluster status: $CLUSTER_STATUS"
+          
+          if [ "$CLUSTER_STATUS" = "DELETING" ]; then
+            echo "⏳ EKS cluster is already in DELETING state. Waiting for deletion to complete..."
+            
+            # Wait up to 30 minutes for deletion to complete
+            for i in {1..60}; do
+              if ! aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+                echo "✅ EKS cluster deletion completed"
+                break
+              fi
+              echo "⏳ Still deleting... (attempt $i/60)"
+              sleep 30
+            done
+          elif [ "$CLUSTER_STATUS" = "CREATING" ]; then
+            echo "🛑 EKS cluster is in CREATING state. This will cause Terraform conflicts."
+            echo "⏳ Waiting for creation to complete before deletion..."
+            
+            # Wait for creation to complete
+            for i in {1..60}; do
+              CURRENT_STATUS=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.status' --output text 2>/dev/null || echo "NOT_FOUND")
+              
+              if [ "$CURRENT_STATUS" = "ACTIVE" ]; then
+                echo "✅ EKS cluster creation completed. Now deleting..."
+                aws eks delete-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+                break
+              elif [ "$CURRENT_STATUS" = "NOT_FOUND" ]; then
+                echo "✅ EKS cluster no longer exists"
+                break
+              fi
+              
+              echo "⏳ Still creating... Status: $CURRENT_STATUS (attempt $i/60)"
+              sleep 30
+            done
+          else
+            echo "🗑️ Deleting EKS cluster in $CLUSTER_STATUS state..."
+            aws eks delete-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} || true
+          fi
+        else
+          echo "✅ EKS cluster does not exist"
+        fi
+
+    - name: Handle Secrets Manager Conflict
+      run: |
+        echo "🔍 Checking Secrets Manager secrets..."
+        
+        SECRET_NAME="github-pat-for-mlops"
+        
+        # Check if secret exists and is scheduled for deletion
+        if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          SECRET_STATUS=$(aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --region ${{ env.AWS_REGION }} --query 'DeletedDate' --output text 2>/dev/null || echo "None")
+          
+          if [ "$SECRET_STATUS" != "None" ]; then
+            echo "🗑️ Secret is scheduled for deletion. Force deleting immediately..."
+            aws secretsmanager delete-secret \
+              --secret-id "$SECRET_NAME" \
+              --region ${{ env.AWS_REGION }} \
+              --force-delete-without-recovery || true
+            
+            echo "⏳ Waiting for secret deletion to complete..."
+            sleep 30
+          else
+            echo "🗑️ Deleting existing secret..."
+            aws secretsmanager delete-secret \
+              --secret-id "$SECRET_NAME" \
+              --region ${{ env.AWS_REGION }} \
+              --force-delete-without-recovery || true
+            
+            echo "⏳ Waiting for secret deletion to complete..."
+            sleep 30
+          fi
+        else
+          echo "✅ Secret does not exist or is already deleted"
+        fi
+
+    - name: Clean Up Other Conflicting Resources
+      run: |
+        echo "🧹 Cleaning up other potentially conflicting resources..."
+        
+        # Clean up any remaining node groups
+        if aws eks list-nodegroups --cluster-name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          NODE_GROUPS=$(aws eks list-nodegroups --cluster-name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'nodegroups[*]' --output text 2>/dev/null || echo "")
+          
+          for node_group in $NODE_GROUPS; do
+            if [ -n "$node_group" ]; then
+              echo "🗑️ Deleting node group: $node_group"
+              aws eks delete-nodegroup \
+                --cluster-name ${{ env.EKS_CLUSTER_NAME }} \
+                --nodegroup-name "$node_group" \
+                --region ${{ env.AWS_REGION }} || true
+            fi
+          done
+        fi
+        
+        # Clean up RDS instances that might conflict
+        RDS_INSTANCES=$(aws rds describe-db-instances --query 'DBInstances[?contains(DBInstanceIdentifier, `mlflow`)].DBInstanceIdentifier' --output text 2>/dev/null || echo "")
+        
+        for db_instance in $RDS_INSTANCES; do
+          if [ -n "$db_instance" ] && [ "$db_instance" != "None" ]; then
+            echo "🗑️ Deleting RDS instance: $db_instance"
+            aws rds delete-db-instance \
+              --db-instance-identifier "$db_instance" \
+              --skip-final-snapshot \
+              --delete-automated-backups \
+              --region ${{ env.AWS_REGION }} || true
+          fi
+        done
+
+    - name: Wait for All Deletions to Complete
+      run: |
+        echo "⏳ Waiting for all deletions to complete..."
+        
+        # Wait for EKS cluster deletion
+        echo "🔍 Waiting for EKS cluster deletion..."
+        for i in {1..30}; do
+          if ! aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "✅ EKS cluster fully deleted"
+            break
+          fi
+          echo "⏳ EKS still deleting... (attempt $i/30)"
+          sleep 30
+        done
+        
+        # Wait for RDS deletion
+        echo "🔍 Waiting for RDS instances deletion..."
+        sleep 60  # Give RDS time to start deletion
+        
+        echo "✅ Emergency cleanup completed"
+
+    - name: Final Status Check
+      run: |
+        echo ""
+        echo "🎯 EMERGENCY CLEANUP COMPLETED"
+        echo "=============================="
+        echo ""
+        
+        # Check EKS status
+        if aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          CLUSTER_STATUS=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.status' --output text)
+          echo "⚠️ EKS Cluster still exists with status: $CLUSTER_STATUS"
+        else
+          echo "✅ EKS Cluster successfully deleted"
+        fi
+        
+        # Check Secrets Manager
+        if aws secretsmanager describe-secret --secret-id "github-pat-for-mlops" --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          echo "⚠️ Secrets Manager secret still exists"
+        else
+          echo "✅ Secrets Manager secret successfully deleted"
+        fi
+        
+        echo ""
+        echo "📋 Next Steps:"
+        echo "1. Wait 5-10 minutes for AWS to fully process deletions"
+        echo "2. Run 'Infrastructure Pipeline' workflow to deploy fresh infrastructure"
+        echo "3. Or run 'Terraform - Destroy Infrastructure' if you want to clean up completely"
+        echo ""
+        echo "✅ Ready for fresh deployment!" 

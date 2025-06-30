@@ -1,8 +1,12 @@
 name: MLOps CD - Deploy Approved Model
 
 on:
-  repository_dispatch:
-    types: [model-approved]
+  workflow_dispatch:
+    inputs:
+      model_package_arn:
+        description: 'Model Package ARN to deploy'
+        required: true
+        type: string
 
 jobs:
   deploy-staging:
@@ -11,21 +15,21 @@ jobs:
       id-token: write
       contents: read
     outputs:
-      model_package_arn: ${{ github.event.client_payload.model_package_arn }}
+      model_package_arn: ${{ github.event.inputs.model_package_arn }}
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
-        aws-region: <<AWS_REGION>>
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.8'
+        python-version: '3.9'
 
     - name: Install dependencies
       run: |
@@ -35,11 +39,11 @@ jobs:
     - name: Deploy to Staging
       run: |
         python scripts/deploy.py \
-          --model-package-arn ${{ github.event.client_payload.model_package_arn }} \
+          --model-package-arn ${{ github.event.inputs.model_package_arn }} \
           --environment staging
       env:
-        AWS_REGION: <<AWS_REGION>>
-        SAGEMAKER_ROLE_ARN: <<YOUR_SAGEMAKER_ROLE_ARN>>
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+        SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
 
   build-and-push-api:
     runs-on: ubuntu-latest
@@ -50,17 +54,17 @@ jobs:
       image: ${{ steps.build-image.outputs.image }}
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
-        aws-region: <<AWS_REGION>>
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build, tag, and push image to Amazon ECR
       id: build-image
@@ -82,17 +86,17 @@ jobs:
       image: ${{ steps.build-image.outputs.image }}
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
-        aws-region: <<AWS_REGION>>
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build, tag, and push UI image to Amazon ECR
       id: build-image
@@ -113,18 +117,18 @@ jobs:
       contents: read
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
-        aws-region: <<AWS_REGION>>
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.8'
+        python-version: '3.9'
 
     - name: Install dependencies
       run: |
@@ -136,7 +140,7 @@ jobs:
         # This is a simple test to check if the endpoint is invocable.
         # A more robust test would involve sending actual data and validating the prediction format/values.
         ENDPOINT_NAME="abalone-staging"
-        REGION="<<AWS_REGION>>"
+        REGION="${{ secrets.AWS_REGION }}"
         PAYLOAD='5,0.455,0.365,0.095,0.514,0.2245,0.101,0.15' # Sample payload
         
         echo "Testing endpoint $ENDPOINT_NAME in region $REGION..."
@@ -154,24 +158,24 @@ jobs:
     needs: [test-staging, build-and-push-api, build-and-push-ui]
     environment:
       name: production
-      url: 'https://console.aws.amazon.com/sagemaker/home?region=<<AWS_REGION>>#/endpoints/abalone-production'
+      url: 'https://console.aws.amazon.com/sagemaker/home?region=${{ secrets.AWS_REGION }}#/endpoints/abalone-production'
     permissions:
       id-token: write
       contents: read
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
-        aws-region: <<AWS_REGION>>
+        role-to-assume: ${{ secrets.GITHUB_ACTIONS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
         
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.8'
+        python-version: '3.9'
 
     - name: Install dependencies
       run: |
@@ -185,14 +189,16 @@ jobs:
           --model-package-arn ${{ needs.deploy-staging.outputs.model_package_arn }} \
           --environment production
       env:
-        AWS_REGION: <<AWS_REGION>>
+        AWS_REGION: ${{ secrets.AWS_REGION }}
 
-    - name: Deploy to EKS
-      uses: aws-actions/amazon-eks-get-kubeconfig@v1
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
       with:
-        name: ${{ secrets.EKS_CLUSTER_NAME }}
-        region: ${{ secrets.AWS_REGION }}
-        role-arn: arn:aws:iam::<<AWS_ACCOUNT_ID>>:role/GitHubActionRole
+        version: 'v1.28.0'
+
+    - name: Configure kubectl for EKS
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
 
     - name: Apply Kubernetes manifests
       run: |
