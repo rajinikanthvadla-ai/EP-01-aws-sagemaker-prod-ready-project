@@ -1,37 +1,277 @@
-name: 'Terraform - Destroy Infrastructure'
+name: Terraform - Destroy Infrastructure
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: 'Type "DESTROY" to confirm infrastructure destruction'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  EKS_CLUSTER_NAME: abalone-mlops
 
 jobs:
-  terraform-destroy:
-    name: 'Terraform Destroy'
+  destroy-infrastructure:
+    name: Destroy AWS Infrastructure
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
+    - name: Validate Destroy Confirmation
+      run: |
+        if [ "${{ github.event.inputs.confirm_destroy }}" != "DESTROY" ]; then
+          echo "❌ Destroy confirmation failed. You must type 'DESTROY' to proceed."
+          exit 1
+        fi
+        echo "✅ Destroy confirmation validated"
 
-    - name: Configure AWS Credentials
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
 
     - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
+      uses: hashicorp/setup-terraform@v3
       with:
-        terraform_version: 1.2.9
+        terraform_version: 1.5.0
+        terraform_wrapper: false
 
-    - name: Terraform Init
+    - name: Configure kubectl for EKS (if exists)
       run: |
+        echo "🔍 Checking if EKS cluster exists..."
+        if aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          echo "✅ EKS cluster found, configuring kubectl..."
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+          kubectl cluster-info
+          echo "EKS_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "ℹ️ EKS cluster not found or already destroyed"
+          echo "EKS_EXISTS=false" >> $GITHUB_ENV
+        fi
+
+    - name: Clean Up All Kubernetes Resources
+      if: env.EKS_EXISTS == 'true'
+      run: |
+        echo "🧹 Cleaning up all Kubernetes resources that might have LoadBalancers..."
+        
+        # Delete all LoadBalancer services across all namespaces
+        echo "🔍 Finding and deleting LoadBalancer services..."
+        kubectl get svc --all-namespaces -o json | jq -r '.items[] | select(.spec.type=="LoadBalancer") | "\(.metadata.namespace) \(.metadata.name)"' | while read namespace service; do
+          if [ -n "$namespace" ] && [ -n "$service" ]; then
+            echo "🗑️ Deleting LoadBalancer service: $service in namespace: $namespace"
+            kubectl delete svc "$service" -n "$namespace" --ignore-not-found=true --timeout=300s
+          fi
+        done
+        
+        # Delete common application namespaces
+        echo "🗑️ Deleting application namespaces..."
+        for ns in mlflow default kube-system; do
+          if [ "$ns" != "kube-system" ]; then
+            echo "Deleting namespace: $ns"
+            kubectl delete namespace "$ns" --ignore-not-found=true --timeout=300s &
+          fi
+        done
+        
+        # Wait for namespace deletions
+        wait
+        
+        # Force delete any remaining LoadBalancer services
+        echo "🔍 Double-checking for remaining LoadBalancer services..."
+        kubectl get svc --all-namespaces --field-selector spec.type=LoadBalancer --no-headers 2>/dev/null | while read line; do
+          if [ -n "$line" ]; then
+            namespace=$(echo $line | awk '{print $1}')
+            service=$(echo $line | awk '{print $2}')
+            echo "🗑️ Force deleting remaining LoadBalancer: $service in $namespace"
+            kubectl delete svc "$service" -n "$namespace" --force --grace-period=0 --ignore-not-found=true
+          fi
+        done
+        
+        echo "⏳ Waiting for LoadBalancers to be fully deleted..."
+        sleep 120
+
+    - name: Clean Up AWS Load Balancers Manually
+      run: |
+        echo "🔍 Checking for remaining AWS Load Balancers..."
+        
+        # Clean up Application Load Balancers
+        echo "🗑️ Cleaning up Application Load Balancers..."
+        aws elbv2 describe-load-balancers --query 'LoadBalancers[?contains(LoadBalancerName, `k8s`) || contains(LoadBalancerName, `abalone`)].LoadBalancerArn' --output text | while read lb_arn; do
+          if [ -n "$lb_arn" ] && [ "$lb_arn" != "None" ]; then
+            echo "Deleting ALB: $lb_arn"
+            aws elbv2 delete-load-balancer --load-balancer-arn "$lb_arn" || true
+          fi
+        done
+        
+        # Clean up Classic Load Balancers
+        echo "🗑️ Cleaning up Classic Load Balancers..."
+        aws elb describe-load-balancers --query 'LoadBalancerDescriptions[?contains(LoadBalancerName, `k8s`) || contains(LoadBalancerName, `abalone`)].LoadBalancerName' --output text | while read lb_name; do
+          if [ -n "$lb_name" ] && [ "$lb_name" != "None" ]; then
+            echo "Deleting ELB: $lb_name"
+            aws elb delete-load-balancer --load-balancer-name "$lb_name" || true
+          fi
+        done
+        
+        echo "⏳ Waiting for Load Balancers to be fully deleted..."
+        sleep 60
+
+    - name: Clean Up Security Groups
+      run: |
+        echo "🔍 Cleaning up security groups with dependencies..."
+        
+        # Get VPC ID from terraform state if available
+        VPC_ID=""
+        if [ -f "infrastructure/terraform.tfstate" ]; then
+          VPC_ID=$(grep -o '"vpc_id":"vpc-[^"]*"' infrastructure/terraform.tfstate | cut -d'"' -f4 | head -1)
+        fi
+        
+        if [ -z "$VPC_ID" ]; then
+          # Try to find VPC by tags
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=abalone-mlops-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+        fi
+        
+        if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          echo "🔍 Found VPC: $VPC_ID"
+          
+          # Delete security groups (except default)
+          aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text | while read sg_id; do
+            if [ -n "$sg_id" ] && [ "$sg_id" != "None" ]; then
+              echo "🗑️ Attempting to delete security group: $sg_id"
+              aws ec2 delete-security-group --group-id "$sg_id" 2>/dev/null || echo "Could not delete $sg_id (may have dependencies)"
+            fi
+          done
+        fi
+
+    - name: Clean Up Network Interfaces
+      run: |
+        echo "🔍 Cleaning up network interfaces..."
+        
+        # Delete available network interfaces that might be blocking subnet deletion
+        aws ec2 describe-network-interfaces --filters "Name=status,Values=available" --query 'NetworkInterfaces[].NetworkInterfaceId' --output text | while read eni_id; do
+          if [ -n "$eni_id" ] && [ "$eni_id" != "None" ]; then
+            echo "🗑️ Deleting network interface: $eni_id"
+            aws ec2 delete-network-interface --network-interface-id "$eni_id" 2>/dev/null || echo "Could not delete $eni_id"
+          fi
+        done
+
+    - name: Initialize Terraform
+      working-directory: ./infrastructure
+      run: |
+        echo "🔧 Initializing Terraform..."
         terraform init \
           -backend-config="bucket=${{ secrets.S3_BUCKET_NAME }}" \
           -backend-config="key=terraform.tfstate" \
           -backend-config="region=${{ secrets.AWS_REGION }}"
-      working-directory: ./infrastructure
 
-    - name: Terraform Destroy
-      run: terraform destroy -auto-approve -var="aws_region=${{ secrets.AWS_REGION }}" -var="github_pat=${{ secrets.GH_PAT }}" -var="github_repo=${{ secrets.GH_REPO }}" -var="oidc_provider_arn=${{ secrets.OIDC_PROVIDER_ARN }}" -var="s3_bucket_name=${{ secrets.S3_BUCKET_NAME }}"
-      working-directory: ./infrastructure 
+    - name: Terraform Destroy with Retry
+      working-directory: ./infrastructure
+      run: |
+        echo "🗑️ Starting Terraform destroy with retry logic..."
+        
+        # Function to run terraform destroy with retries
+        destroy_with_retry() {
+          local max_attempts=3
+          local attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "🔄 Terraform destroy attempt $attempt/$max_attempts..."
+            
+            if terraform destroy -auto-approve \
+              -var="aws_region=${{ secrets.AWS_REGION }}" \
+              -var="github_repo=${{ github.repository }}" \
+              -target=module.eks \
+              -target=aws_db_instance.mlflow_db \
+              -target=aws_lambda_function.trigger_deployment; then
+              echo "✅ Targeted resources destroyed successfully"
+              break
+            else
+              echo "❌ Targeted destroy attempt $attempt failed"
+              if [ $attempt -eq $max_attempts ]; then
+                echo "⚠️ Continuing with full destroy after targeted failures..."
+              else
+                echo "⏳ Waiting 60 seconds before retry..."
+                sleep 60
+              fi
+            fi
+            
+            attempt=$((attempt + 1))
+          done
+          
+          # Full destroy
+          echo "🔄 Running full terraform destroy..."
+          attempt=1
+          while [ $attempt -le $max_attempts ]; do
+            echo "🗑️ Full destroy attempt $attempt/$max_attempts..."
+            
+            if terraform destroy -auto-approve \
+              -var="aws_region=${{ secrets.AWS_REGION }}" \
+              -var="github_repo=${{ github.repository }}"; then
+              echo "✅ Infrastructure destroyed successfully!"
+              return 0
+            else
+              echo "❌ Destroy attempt $attempt failed"
+              if [ $attempt -lt $max_attempts ]; then
+                echo "⏳ Waiting 120 seconds before retry..."
+                sleep 120
+              fi
+            fi
+            
+            attempt=$((attempt + 1))
+          done
+          
+          echo "❌ All destroy attempts failed"
+          return 1
+        }
+        
+        # Run destroy with retry
+        destroy_with_retry
+
+    - name: Manual Cleanup of Remaining Resources
+      if: failure()
+      run: |
+        echo "🧹 Manual cleanup of remaining resources..."
+        
+        # Clean up any remaining EKS resources
+        if aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          echo "🗑️ Manually deleting EKS cluster..."
+          aws eks delete-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} || true
+        fi
+        
+        # Clean up RDS instances
+        echo "🗑️ Cleaning up RDS instances..."
+        aws rds describe-db-instances --query 'DBInstances[?contains(DBInstanceIdentifier, `mlflow`)].DBInstanceIdentifier' --output text | while read db_id; do
+          if [ -n "$db_id" ] && [ "$db_id" != "None" ]; then
+            echo "Deleting RDS instance: $db_id"
+            aws rds delete-db-instance --db-instance-identifier "$db_id" --skip-final-snapshot --delete-automated-backups || true
+          fi
+        done
+        
+        echo "⚠️ Some resources may need manual cleanup in AWS Console"
+
+    - name: Final Status
+      run: |
+        echo ""
+        echo "🎯 DESTROY COMPLETED"
+        echo "==================="
+        echo ""
+        echo "✅ Infrastructure destroy process completed"
+        echo ""
+        echo "🔍 If any resources remain:"
+        echo "1. Check AWS Console for remaining resources"
+        echo "2. Look for LoadBalancers, Security Groups, ENIs"
+        echo "3. Delete them manually if needed"
+        echo "4. Re-run this workflow if necessary"
+        echo ""
+        echo "💡 Remember to also clean up:"
+        echo "- S3 bucket: ${{ secrets.S3_BUCKET_NAME }}"
+        echo "- ECR repositories (if not needed)" 

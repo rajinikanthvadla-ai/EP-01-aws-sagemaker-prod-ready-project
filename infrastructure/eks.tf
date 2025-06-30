@@ -10,10 +10,17 @@ resource "aws_eks_cluster" "main" {
     endpoint_public_access  = true
   }
 
+  # Enable control plane logging
+  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+
   depends_on = [
     aws_iam_role_policy_attachment.eks_cluster_policy,
     aws_iam_role_policy_attachment.eks_service_policy,
   ]
+
+  lifecycle {
+    prevent_destroy = false
+  }
 }
 
 # EKS Node Group
@@ -36,9 +43,17 @@ resource "aws_eks_node_group" "main" {
     max_unavailable = 1
   }
 
+  # Force update of Auto Scaling Group name to trigger replacement
+  force_update_version = true
+
   depends_on = [
     aws_iam_role_policy_attachment.eks_worker_node_policy,
     aws_iam_role_policy_attachment.eks_cni_policy,
     aws_iam_role_policy_attachment.eks_container_registry_policy,
   ]
+
+  lifecycle {
+    prevent_destroy = false
+    ignore_changes = [scaling_config[0].desired_size]
+  }
 } 

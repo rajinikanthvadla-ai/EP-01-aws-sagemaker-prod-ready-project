@@ -20,6 +20,10 @@ resource "aws_ecr_repository" "api_repository" {
   image_scanning_configuration {
     scan_on_push = true
   }
+
+  lifecycle {
+    prevent_destroy = false
+  }
 }
 
 resource "aws_ecr_repository" "ui_repository" {
@@ -29,6 +33,10 @@ resource "aws_ecr_repository" "ui_repository" {
 
   image_scanning_configuration {
     scan_on_push = true
+  }
+
+  lifecycle {
+    prevent_destroy = false
   }
 }
 
@@ -41,8 +49,13 @@ resource "aws_db_instance" "mlflow_db" {
   username             = "mlflow"
   password             = random_password.db_password.result
   skip_final_snapshot  = true
+  delete_automated_backups = true
   publicly_accessible = true # For simplicity in this lab. In production, use private endpoints.
   vpc_security_group_ids = [aws_security_group.db_sg.id]
+
+  lifecycle {
+    prevent_destroy = false
+  }
 }
 
 resource "aws_security_group" "db_sg" {
