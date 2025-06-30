@@ -49,8 +49,12 @@ resource "aws_lambda_permission" "allow_eventbridge" {
   source_arn    = aws_cloudwatch_event_rule.sagemaker_approval_rule.arn
 }
 
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 resource "aws_secretsmanager_secret" "github_pat" {
-  name                    = "github-pat-for-mlops"
+  name                    = "github-pat-for-mlops-${random_id.secret_suffix.hex}"
   description             = "GitHub PAT for triggering repository_dispatch events"
   recovery_window_in_days = 0  # Allow immediate deletion and recreation
   

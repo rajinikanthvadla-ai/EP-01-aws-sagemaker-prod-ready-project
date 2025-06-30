@@ -1,0 +1,166 @@
+name: Fix Current Infrastructure Conflicts
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_fix:
+        description: 'Type "FIX" to confirm fixing current conflicts'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  fix-conflicts:
+    name: Fix Current Conflicts
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Validate Fix Confirmation
+      run: |
+        if [ "${{ github.event.inputs.confirm_fix }}" != "FIX" ]; then
+          echo "❌ Fix confirmation failed. You must type 'FIX' to proceed."
+          exit 1
+        fi
+        echo "✅ Fix confirmation validated"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.TERRAFORM_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.TERRAFORM_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Fix Secrets Manager Conflict
+      run: |
+        echo "🔍 Fixing Secrets Manager conflicts..."
+        
+        # Find and force delete any github-pat secrets
+        SECRET_NAMES=$(aws secretsmanager list-secrets --query 'SecretList[?contains(Name, `github-pat`)].Name' --output text 2>/dev/null || echo "")
+        
+        if [ -n "$SECRET_NAMES" ]; then
+          for secret_name in $SECRET_NAMES; do
+            if [ -n "$secret_name" ] && [ "$secret_name" != "None" ]; then
+              echo "🗑️ Force deleting secret: $secret_name"
+              aws secretsmanager delete-secret \
+                --secret-id "$secret_name" \
+                --region ${{ env.AWS_REGION }} \
+                --force-delete-without-recovery || true
+            fi
+          done
+          
+          echo "⏳ Waiting for secrets to be fully deleted..."
+          sleep 30
+        else
+          echo "✅ No conflicting secrets found"
+        fi
+
+    - name: Fix RDS Instance Conflicts
+      run: |
+        echo "🔍 Fixing RDS instance conflicts..."
+        
+        # Find and delete RDS instances with problematic passwords
+        RDS_INSTANCES=$(aws rds describe-db-instances --query 'DBInstances[?contains(DBInstanceIdentifier, `mlflow`)].DBInstanceIdentifier' --output text 2>/dev/null || echo "")
+        
+        if [ -n "$RDS_INSTANCES" ]; then
+          for db_instance in $RDS_INSTANCES; do
+            if [ -n "$db_instance" ] && [ "$db_instance" != "None" ]; then
+              echo "🗑️ Deleting RDS instance: $db_instance"
+              aws rds delete-db-instance \
+                --db-instance-identifier "$db_instance" \
+                --skip-final-snapshot \
+                --delete-automated-backups \
+                --region ${{ env.AWS_REGION }} || true
+            fi
+          done
+          
+          echo "⏳ Waiting for RDS instances to start deletion..."
+          sleep 60
+        else
+          echo "✅ No conflicting RDS instances found"
+        fi
+
+    - name: Clean Up DB Subnet Groups
+      run: |
+        echo "🔍 Cleaning up DB subnet groups..."
+        
+        # Delete DB subnet groups that might conflict
+        SUBNET_GROUPS=$(aws rds describe-db-subnet-groups --query 'DBSubnetGroups[?contains(DBSubnetGroupName, `mlflow`)].DBSubnetGroupName' --output text 2>/dev/null || echo "")
+        
+        if [ -n "$SUBNET_GROUPS" ]; then
+          for subnet_group in $SUBNET_GROUPS; do
+            if [ -n "$subnet_group" ] && [ "$subnet_group" != "None" ]; then
+              echo "🗑️ Deleting DB subnet group: $subnet_group"
+              aws rds delete-db-subnet-group \
+                --db-subnet-group-name "$subnet_group" \
+                --region ${{ env.AWS_REGION }} || true
+            fi
+          done
+        else
+          echo "✅ No conflicting DB subnet groups found"
+        fi
+
+    - name: Wait for Complete Cleanup
+      run: |
+        echo "⏳ Waiting for all resources to be fully deleted..."
+        
+        # Wait for RDS deletion to complete
+        echo "🔍 Waiting for RDS instances to be deleted..."
+        for i in {1..20}; do
+          RDS_COUNT=$(aws rds describe-db-instances --query 'length(DBInstances[?contains(DBInstanceIdentifier, `mlflow`)])' --output text 2>/dev/null || echo "0")
+          
+          if [ "$RDS_COUNT" = "0" ]; then
+            echo "✅ All RDS instances deleted"
+            break
+          fi
+          
+          echo "⏳ Still deleting RDS instances... (attempt $i/20)"
+          sleep 30
+        done
+        
+        # Verify secrets are deleted
+        echo "🔍 Verifying secrets deletion..."
+        SECRET_COUNT=$(aws secretsmanager list-secrets --query 'length(SecretList[?contains(Name, `github-pat`)])' --output text 2>/dev/null || echo "0")
+        
+        if [ "$SECRET_COUNT" = "0" ]; then
+          echo "✅ All conflicting secrets deleted"
+        else
+          echo "⚠️ Some secrets may still exist"
+        fi
+
+    - name: Final Status Check
+      run: |
+        echo ""
+        echo "🎯 CONFLICT RESOLUTION COMPLETED"
+        echo "================================"
+        echo ""
+        
+        # Check remaining conflicts
+        echo "🔍 Final conflict check:"
+        
+        # Check Secrets Manager
+        SECRET_COUNT=$(aws secretsmanager list-secrets --query 'length(SecretList[?contains(Name, `github-pat`)])' --output text 2>/dev/null || echo "0")
+        if [ "$SECRET_COUNT" = "0" ]; then
+          echo "✅ Secrets Manager: No conflicts"
+        else
+          echo "⚠️ Secrets Manager: $SECRET_COUNT conflicting secrets still exist"
+        fi
+        
+        # Check RDS
+        RDS_COUNT=$(aws rds describe-db-instances --query 'length(DBInstances[?contains(DBInstanceIdentifier, `mlflow`)])' --output text 2>/dev/null || echo "0")
+        if [ "$RDS_COUNT" = "0" ]; then
+          echo "✅ RDS: No conflicts"
+        else
+          echo "⚠️ RDS: $RDS_COUNT conflicting instances still exist"
+        fi
+        
+        echo ""
+        echo "📋 Next Steps:"
+        echo "1. Wait 2-3 minutes for AWS to fully process deletions"
+        echo "2. Run 'Infrastructure Pipeline' workflow to deploy with fixed configuration"
+        echo "3. The new deployment will use:"
+        echo "   - Unique secret names with random suffixes"
+        echo "   - RDS-compliant password characters only"
+        echo ""
+        echo "✅ Ready for fresh deployment with conflict fixes!" 

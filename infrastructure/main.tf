@@ -7,9 +7,10 @@ data "aws_rds_engine_version" "postgresql" {
 }
 
 resource "random_password" "db_password" {
-  length           = 16
-  special          = true
-  override_special = "!#$%&'()*+,-./:;<=>?@[]^_`{|}~"
+  length  = 16
+  special = true
+  # Only include safe special characters for RDS (exclude /, @, ", and space)
+  override_special = "!#$%&()*+,-.:<=>?[]^_`{|}~"
 }
 
 resource "aws_ecr_repository" "api_repository" {
